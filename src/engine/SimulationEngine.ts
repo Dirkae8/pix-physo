@@ -1,0 +1,289 @@
+import { BrushShape, GameSettings } from '../types/physics';
+import { MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
+import { AirSolver } from './AirSolver';
+import { ChemistrySolver } from './ChemistrySolver';
+import { ElectricSolver } from './ElectricSolver';
+import { MechanicsSolver } from './MechanicsSolver';
+import { ThermalSolver } from './ThermalSolver';
+import { World, getResolutionDims } from './World';
+
+export class SimulationEngine {
+  public world: World;
+  public airSolver: AirSolver;
+  public thermalSolver: ThermalSolver;
+  public electricSolver: ElectricSolver;
+  public chemistrySolver: ChemistrySolver;
+  public mechanicsSolver: MechanicsSolver;
+
+  public paused = false;
+  public speedMultiplier = 1;
+  private stepAccumulator = 0;
+
+  constructor(settings: GameSettings) {
+    const [w, h] = getResolutionDims(settings.resolutionPreset);
+    this.world = new World(w, h);
+    this.airSolver = new AirSolver(this.world.airSize);
+    this.thermalSolver = new ThermalSolver(this.world.size);
+    this.electricSolver = new ElectricSolver(this.world.size);
+    this.chemistrySolver = new ChemistrySolver();
+    this.mechanicsSolver = new MechanicsSolver(this.world.size);
+  }
+
+  public applySettings(settings: GameSettings): boolean {
+    const [w, h] = getResolutionDims(settings.resolutionPreset);
+    if (w !== this.world.width || h !== this.world.height) {
+      this.world.resize(w, h);
+      this.airSolver.ensureSize(this.world.airSize);
+      this.thermalSolver.ensureSize(this.world.size);
+      this.electricSolver.ensureSize(this.world.size);
+      this.mechanicsSolver.ensureSize(this.world.size);
+      return true;
+    }
+    return false;
+  }
+
+  public stepFrame(settings: GameSettings, forceSingleStep = false): number {
+    if (this.paused && !forceSingleStep) {
+      return 0;
+    }
+
+    const t0 = performance.now();
+    this.world.events.explosionEnergy = 0;
+    this.world.events.electricArcCount = 0;
+    this.world.events.sizzleCount = 0;
+    this.world.events.fractureCount = 0;
+
+    let ticksToRun = 1;
+    if (!forceSingleStep) {
+      this.stepAccumulator += this.speedMultiplier;
+      ticksToRun = Math.floor(this.stepAccumulator);
+      this.stepAccumulator -= ticksToRun;
+    }
+
+    if (ticksToRun <= 0) {
+      return performance.now() - t0;
+    }
+
+    const isBalance = settings.computeMode === 'balance70';
+    const mechSubsteps = Math.max(1, settings.substeps);
+
+    for (let t = 0; t < ticksToRun; t++) {
+      this.world.timeSec += 1 / 60;
+
+      // Air Navier-Stokes continuum solver (heavier CPU iterations in 70/30 Balance mode; lighter on CPU in 90/10 GPU mode)
+      this.airSolver.step(this.world, isBalance ? 4 : 2);
+
+      // Thermodynamics & Clausius-Clapeyron phase transitions
+      this.thermalSolver.step(this.world);
+      if (isBalance) {
+        this.thermalSolver.step(this.world);
+      }
+
+      // Electricity, Joule heating, Batteries, Generators, Buttons, Switches, Tesla coils
+      this.electricSolver.step(this.world, isBalance ? 8 : 5);
+
+      // Chemical & Nuclear reactions, Absorption, Dissolution
+      this.chemistrySolver.step(this.world);
+
+      // Multi-substep Hydrostatics, Granular Rheology & Gas Buoyancy
+      for (let s = 0; s < mechSubsteps; s++) {
+        this.mechanicsSolver.step(this.world, s === 0);
+      }
+    }
+
+    return performance.now() - t0;
+  }
+
+  public applyBrushStroke(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    matId: number,
+    radius: number,
+    shape: BrushShape,
+    replaceExisting: boolean,
+    isErase: boolean
+  ): void {
+    const world = this.world;
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    const steps = Math.max(1, Math.ceil(dist / Math.max(1, radius * 0.45)));
+
+    for (let s = 0; s <= steps; s++) {
+      const t = steps === 0 ? 0 : s / steps;
+      const cx = Math.round(x0 + (x1 - x0) * t);
+      const cy = Math.round(y0 + (y1 - y0) * t);
+      this.stampBrushAt(cx, cy, x1 - x0, y1 - y0, matId, radius, shape, replaceExisting, isErase);
+    }
+  }
+
+  private stampBrushAt(
+    cx: number,
+    cy: number,
+    moveDx: number,
+    moveDy: number,
+    matId: number,
+    radius: number,
+    shape: BrushShape,
+    replaceExisting: boolean,
+    isErase: boolean
+  ): void {
+    const world = this.world;
+    const r = Math.max(0, radius);
+
+    if (isErase || matId === MAT.TOOL_ERASER) {
+      this.forEachBrushCell(cx, cy, r, shape, (x, y) => {
+        const i = y * world.width + x;
+        world.mat[i] = MAT.EMPTY;
+        world.volt[i] = 0;
+        world.current[i] = 0;
+        world.wetness[i] = 0;
+        world.absorbedMat[i] = 0;
+        world.stress[i] = 0;
+      });
+      return;
+    }
+
+    if (matId === MAT.TOOL_HEAT) {
+      this.forEachBrushCell(cx, cy, r + 2, shape, (x, y, falloff) => {
+        const i = y * world.width + x;
+        world.temp[i] = Math.min(5500, world.temp[i] + 95 * falloff);
+      });
+      return;
+    }
+
+    if (matId === MAT.TOOL_COOL) {
+      this.forEachBrushCell(cx, cy, r + 2, shape, (x, y, falloff) => {
+        const i = y * world.width + x;
+        world.temp[i] = Math.max(-272, world.temp[i] - 85 * falloff);
+      });
+      return;
+    }
+
+    if (matId === MAT.TOOL_WIND) {
+      const impulseX = Math.max(-28, Math.min(28, moveDx * 1.8 || 8));
+      const impulseY = Math.max(-28, Math.min(28, moveDy * 1.8));
+      this.forEachBrushCell(cx, cy, r + 6, 'circle', (x, y, falloff) => {
+        const ai = world.airIdxFromCell(x, y);
+        world.airVx[ai] += impulseX * 0.45 * falloff;
+        world.airVy[ai] += impulseY * 0.45 * falloff;
+        world.airPressure[ai] += Math.hypot(impulseX, impulseY) * 0.35 * falloff;
+        const i = y * world.width + x;
+        if (STATE_LUT[world.mat[i]] >= 2 && STATE_LUT[world.mat[i]] <= 5) {
+          world.vx[i] += impulseX * 0.22 * falloff;
+          world.vy[i] += impulseY * 0.22 * falloff;
+        }
+      });
+      return;
+    }
+
+    if (matId === MAT.TOOL_HAND) {
+      return; // Handled via startHandGrab / moveHandGrab
+    }
+
+    const def = MATERIAL_BY_ID[matId];
+    const isScatter = shape === 'spray' || def.state === 'powder' || def.state === 'gas' || matId === MAT.NEUTRON;
+
+    this.forEachBrushCell(cx, cy, r, shape, (x, y) => {
+      if (shape === 'spray' && world.rand() > 0.22) return;
+      if (isScatter && shape !== 'square' && r >= 2 && def.state === 'powder' && world.rand() > 0.78) return;
+
+      const i = y * world.width + x;
+      const curMat = world.mat[i];
+      if (!replaceExisting && curMat !== MAT.EMPTY && STATE_LUT[curMat] !== 4) {
+        return;
+      }
+      world.setCell(x, y, matId);
+    });
+  }
+
+  public startHandGrab(cx: number, cy: number, radius: number): void {
+    const world = this.world;
+    world.releaseHand(true);
+
+    const grabR = Math.max(5, radius + 4);
+    const r2 = grabR * grabR;
+    const indices: number[] = [];
+
+    for (let dy = -grabR; dy <= grabR; dy++) {
+      for (let dx = -grabR; dx <= grabR; dx++) {
+        if (dx * dx + dy * dy > r2) continue;
+        const x = cx + dx;
+        const y = cy + dy;
+        if (!world.inBounds(x, y)) continue;
+        const i = y * world.width + x;
+        const m = world.mat[i];
+        if (m === MAT.EMPTY) continue;
+        const st = STATE_LUT[m];
+        if (st === 1 || st === 2 || st === 3) {
+          indices.push(i);
+        }
+      }
+    }
+
+    if (indices.length === 0) return;
+
+    world.pushUndo();
+    world.hand = {
+      active: true,
+      anchorX: cx,
+      anchorY: cy,
+      targetX: cx,
+      targetY: cy,
+      vx: 0,
+      vy: 0,
+      detached: false,
+      pullForce: 0,
+      cluster: [],
+      sourceIndices: indices,
+    };
+  }
+
+  public moveHandGrab(nx: number, ny: number): void {
+    const hand = this.world.hand;
+    if (!hand.active) return;
+
+    const dx = nx - hand.targetX;
+    const dy = ny - hand.targetY;
+    hand.vx = hand.vx * 0.45 + Math.max(-14, Math.min(14, dx)) * 0.55;
+    hand.vy = hand.vy * 0.45 + Math.max(-14, Math.min(14, dy)) * 0.55;
+    hand.targetX = nx;
+    hand.targetY = ny;
+
+    // Also stir liquids & air directly along hand movement!
+    const ai = this.world.airIdxFromCell(Math.round(nx), Math.round(ny));
+    this.world.airVx[ai] += hand.vx * 1.4;
+    this.world.airVy[ai] += hand.vy * 1.4;
+  }
+
+  private forEachBrushCell(
+    cx: number,
+    cy: number,
+    r: number,
+    shape: BrushShape,
+    fn: (x: number, y: number, falloff: number) => void
+  ): void {
+    const w = this.world.width;
+    const h = this.world.height;
+    const r2 = (r + 0.45) * (r + 0.45);
+
+    for (let dy = -r; dy <= r; dy++) {
+      const y = cy + dy;
+      if (y < 0 || y >= h) continue;
+      for (let dx = -r; dx <= r; dx++) {
+        const x = cx + dx;
+        if (x < 0 || x >= w) continue;
+
+        if (shape === 'square') {
+          fn(x, y, 1.0);
+        } else {
+          const d2 = dx * dx + dy * dy;
+          if (d2 <= r2) {
+            const falloff = r > 0 ? Math.max(0.15, 1 - Math.sqrt(d2) / (r + 1)) : 1.0;
+            fn(x, y, falloff);
+          }
+        }
+      }
+    }
+  }
+}

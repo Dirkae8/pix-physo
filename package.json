@@ -1,0 +1,19 @@
+{
+  "name": "pixphyso",
+  "private": true,
+  "version": "2.0.0",
+  "description": "PIXPHYSO — Realistic GPU/CPU Multi-Physics Pixel Sandbox",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 5173",
+    "test": "vitest run",
+    "build:release": "node scripts/build-release.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.5"
+  }
+}

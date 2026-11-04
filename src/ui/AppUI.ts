@@ -1,0 +1,1230 @@
+import { SoundEngine } from '../audio/SoundEngine';
+import { DEMO_SCENES } from '../engine/Demos';
+import { SimulationEngine } from '../engine/SimulationEngine';
+import { ThermalSolver } from '../engine/ThermalSolver';
+import { GpuPipeline } from '../gpu/GpuPipeline';
+import {
+  CATEGORIES,
+  MAT,
+  MATERIAL_BY_ID,
+  SELECTABLE_MATERIALS,
+} from '../materials/registry';
+import {
+  BoundaryMode,
+  BrushShape,
+  CategoryId,
+  DisplayMode,
+  FanDirection,
+  GameSettings,
+} from '../types/physics';
+import { getMaterialThumbnailUrl } from './ThumbnailRenderer';
+import { WindCompass } from './WindCompass';
+import { PIXPHYSO_LOGO_URI } from './logo';
+
+export class AppUI {
+  private settings: GameSettings = {
+    computeMode: 'gpu90',
+    substeps: 3,
+    resolutionPreset: 'standard',
+    hdrBloom: true,
+    bloomIntensity: 0.72,
+    realisticTextures: true,
+    refractionAndSpec: true,
+    heatShimmer: true,
+    airVectorsOverlay: false,
+    structuralStress: true,
+    soundEnabled: true,
+    soundVolume: 0.45,
+    showCrosshairInfo: true,
+  };
+
+  private engine: SimulationEngine;
+  private gpu!: GpuPipeline;
+  private sound = new SoundEngine();
+  private windCompass!: WindCompass;
+
+  private selectedCategory: CategoryId = 'all';
+  private searchQuery = '';
+  private selectedMatId: number = MAT.SAND;
+  private brushRadius = 5;
+  private brushShape: BrushShape = 'circle';
+  private replaceMode = false;
+  private displayMode: DisplayMode = 'realistic';
+
+  private simCanvas!: HTMLCanvasElement;
+  private hudCanvas!: HTMLCanvasElement;
+  private hudCtx!: CanvasRenderingContext2D;
+  private canvasWrap!: HTMLElement;
+  private canvasFrame!: HTMLElement;
+
+  // Pointer state
+  private pointerDown = false;
+  private pointerErase = false;
+  private pointerInteractedSwitch = false;
+  private pointerSimX = -1;
+  private pointerSimY = -1;
+  private prevSimX = -1;
+  private prevSimY = -1;
+  private lineStartX = -1;
+  private lineStartY = -1;
+  private shiftHeld = false;
+
+  // Telemetry smoothing
+  private fps = 60;
+  private frameCounter = 0;
+  private lastFpsStamp = performance.now();
+  private smoothCpuMs = 0.8;
+  private smoothGpuMs = 6.5;
+  private particleCount = 0;
+
+  // DOM refs for fast updates
+  private probeEl!: HTMLElement;
+  private telemetryEl!: HTMLElement;
+  private computeBadgeEl!: HTMLElement;
+  private itemsStripEl!: HTMLElement;
+  private selectedBannerEl!: HTMLElement;
+  private fanDirBarEl!: HTMLElement;
+  private settingsModalEl!: HTMLElement;
+  private exitModalEl!: HTMLElement;
+
+  constructor(private root: HTMLElement) {
+    this.engine = new SimulationEngine(this.settings);
+    this.mountDOM();
+    this.gpu = new GpuPipeline(this.simCanvas);
+    this.fitCanvasViewport();
+
+    // Load rich initial Physics Lab scene so user immediately sees real physics, density stratification & active electric circuit!
+    DEMO_SCENES[0].build(this.engine.world);
+
+    window.addEventListener('resize', () => this.fitCanvasViewport());
+    this.bindKeyboard();
+    this.startLoop();
+  }
+
+  private mountDOM(): void {
+    this.root.innerHTML = `
+      <div class="app-shell">
+        <!-- TOP BAR (Single PIXPHYSO Icon + Transport + Game Settings + Exit) -->
+        <header class="topbar">
+          <div class="brand-group">
+            <img src="${PIXPHYSO_LOGO_URI}" alt="PIXPHYSO" class="brand-logo" />
+            <span class="brand-title">PIXPHYSO</span>
+            <span class="compute-badge" id="computeBadge" title="Нажмите для настройки распределения GPU / CPU">
+              90% GPU · 10% CPU
+            </span>
+          </div>
+
+          <div class="transport-group">
+            <button class="btn btn-primary" id="btnPlayPause">⏸ Пауза</button>
+            <button class="btn" id="btnStep" title="Один физический шаг (F)">⏭ Шаг</button>
+            <div class="speed-pill-bar" id="speedBar">
+              <button class="speed-btn" data-spd="0.25">0,25×</button>
+              <button class="speed-btn" data-spd="0.5">0,5×</button>
+              <button class="speed-btn active" data-spd="1">1×</button>
+              <button class="speed-btn" data-spd="2">2×</button>
+              <button class="speed-btn" data-spd="4">4×</button>
+            </div>
+            <button class="btn" id="btnUndo" title="Отменить действие (Ctrl+Z)">↩ Отмена</button>
+          </div>
+
+          <div class="actions-group">
+            ${
+              typeof window !== 'undefined' && window.location.protocol !== 'file:'
+                ? `<a class="btn btn-primary" href="/PIXPHYSO-Release.zip" download="PIXPHYSO-Release.zip" style="text-decoration:none;" title="Скачать готовый архив игры для запуска на ПК без установки">⬇ Скачать .ZIP</a>`
+                : ''
+            }
+            <button class="btn btn-danger" id="btnClear">Очистить</button>
+            <button class="btn" id="btnSettings">⚙ Настройки</button>
+            <button class="btn" id="btnExit">Выход</button>
+          </div>
+        </header>
+
+        <!-- MIDDLE WORKSPACE: Left Simulation Environment Bar + GPU Viewport -->
+        <div class="workspace-middle">
+          <aside class="env-sidebar">
+            <div class="panel-section">
+              <div class="section-title">
+                <span>Среда симуляции</span>
+                <span id="presetStatusLabel" style="color:#6ee7b7;font-size:10px;">УЛИЦА</span>
+              </div>
+              <div class="preset-tabs">
+                <button class="preset-tab active" data-preset="street">Улица</button>
+                <button class="preset-tab" data-preset="home">Дом</button>
+                <button class="preset-tab" data-preset="custom">Свой</button>
+              </div>
+
+              <div class="ctrl-row">
+                <div class="ctrl-label">
+                  <span>Средняя температура</span>
+                  <span class="ctrl-val" id="valAmbTemp">18 °C</span>
+                </div>
+                <input type="range" id="rngAmbTemp" min="-190" max="600" step="1" value="18" />
+              </div>
+
+              <div class="ctrl-row">
+                <div class="ctrl-label">
+                  <span>Влажность воздуха</span>
+                  <span class="ctrl-val" id="valHumidity">62 %</span>
+                </div>
+                <input type="range" id="rngHumidity" min="0" max="100" step="1" value="62" />
+              </div>
+
+              <div class="ctrl-row">
+                <div class="ctrl-label">
+                  <span>Атм. давление</span>
+                  <span class="ctrl-val" id="valPressure">101,3 кПа</span>
+                </div>
+                <input type="range" id="rngPressure" min="0.5" max="500" step="0.5" value="101.3" />
+                <div class="sub-hint" id="boilHint">Кипение H₂O при этом давлении: 100.0 °C</div>
+              </div>
+
+              <div class="ctrl-row">
+                <div class="ctrl-label">
+                  <span>Гравитация</span>
+                  <span class="ctrl-val" id="valGravity">9,81 м/с²</span>
+                </div>
+                <input type="range" id="rngGravity" min="-9.81" max="24.8" step="0.1" value="9.81" />
+              </div>
+
+              <button class="btn" id="btnResetEnv" style="width:100%;margin-top:2px;">
+                Сбросить среду к пресету
+              </button>
+            </div>
+
+            <!-- WIND SPEED & 360° DIRECTION COMPASS -->
+            <div class="panel-section">
+              <div class="section-title">
+                <span>Ветер и направление</span>
+                <span id="valWindAngle" style="color:#f8fafc;">0° (Восток →)</span>
+              </div>
+              <div class="wind-box">
+                <div id="windCompassMount"></div>
+                <div style="display:flex;flex-direction:column;gap:5px;">
+                  <div class="ctrl-label">
+                    <span>Скорость</span>
+                    <span class="ctrl-val" id="valWindSpeed">2,4 м/с</span>
+                  </div>
+                  <input type="range" id="rngWindSpeed" min="0" max="40" step="0.2" value="2.4" />
+                  <div class="wind-quick-dirs">
+                    <button class="mini-btn" data-wdir="180" title="Западный (влево)">←</button>
+                    <button class="mini-btn" data-wdir="270" title="Восходящий поток">↑</button>
+                    <button class="mini-btn" data-wdir="90" title="Нисходящий поток">↓</button>
+                    <button class="mini-btn" data-wdir="0" title="Восточный (вправо)">→</button>
+                  </div>
+                  <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);cursor:pointer;">
+                    <input type="checkbox" id="chkWindGusts" checked /> Порывы ветра
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- DISPLAY FILTER & BOUNDARIES -->
+            <div class="panel-section">
+              <div class="section-title">Отображение и края</div>
+              <div class="ctrl-row">
+                <div class="ctrl-label"><span>Научный режим камеры</span></div>
+                <select class="dark-select" id="selDisplayMode">
+                  <option value="realistic">Реалистичный (HDR + PBR текстуры)</option>
+                  <option value="thermal">Тепловизор (FLIR ИК-спектр)</option>
+                  <option value="pressure">Давление и ударные волны (кПа)</option>
+                  <option value="velocity">Аэродинамика и потоки ветра</option>
+                  <option value="electric">Электрический потенциал (В / А)</option>
+                  <option value="stress">Гидростатика и мех. нагрузка</option>
+                </select>
+              </div>
+              <div class="ctrl-row">
+                <div class="ctrl-label"><span>Границы поля</span></div>
+                <select class="dark-select" id="selBoundary">
+                  <option value="open_sky">Открытое небо (газы уходят вверх)</option>
+                  <option value="closed">Герметичный бункер (замкнутый)</option>
+                  <option value="open_all">Открытые края со всех сторон</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- DEMO EXPERIMENTS -->
+            <div class="panel-section">
+              <div class="section-title">Физические стенды</div>
+              <select class="dark-select" id="selDemoScene">
+                ${DEMO_SCENES.map((d, idx) => `<option value="${idx}">${d.title}</option>`).join('')}
+              </select>
+              <div class="sub-hint" id="demoDescHint">${DEMO_SCENES[0].subtitle}</div>
+              <button class="btn btn-primary" id="btnLoadDemo" style="width:100%;">
+                Запустить стенд
+              </button>
+            </div>
+          </aside>
+
+          <!-- SIMULATION STAGE -->
+          <main class="stage-area">
+            <div class="canvas-wrap" id="canvasWrap">
+              <div class="canvas-frame" id="canvasFrame">
+                <canvas class="sim-canvas" id="simCanvas"></canvas>
+                <canvas class="hud-canvas" id="hudCanvas"></canvas>
+              </div>
+            </div>
+            <footer class="status-bar">
+              <div class="probe-readout" id="probeReadout">
+                Наведите курсор на поле · ЛКМ — рисовать / нажимать кнопки и тумблеры · ПКМ — ластик · Shift — прямая линия
+              </div>
+              <div class="telemetry-readout" id="telemetryReadout">
+                60 FPS · 90% GPU / 10% CPU · WebGL2 HDR
+              </div>
+            </footer>
+          </main>
+        </div>
+
+        <!-- BOTTOM ITEM STRIP + RIGHT-CORNER CATEGORY MATRIX -->
+        <section class="bottom-dock">
+          <div class="items-column">
+            <div class="brush-toolbar">
+              <input
+                type="text"
+                class="search-input"
+                id="inpSearch"
+                placeholder="Поиск из ${SELECTABLE_MATERIALS.length} предметов..."
+              />
+
+              <div class="brush-inline">
+                <span>Кисть:</span>
+                <input type="range" id="rngBrush" min="0" max="32" step="1" value="5" />
+                <strong id="valBrush" style="color:#fff;min-width:22px;">5</strong>
+              </div>
+
+              <div class="brush-inline" id="shapeButtons">
+                <button class="mini-btn active" data-shape="circle" title="Круглая кисть">● Круг</button>
+                <button class="mini-btn" data-shape="square" title="Квадратный блок">■ Блок</button>
+                <button class="mini-btn" data-shape="line" title="Прямая линия / стена / провод">╱ Линия</button>
+                <button class="mini-btn" data-shape="spray" title="Распылитель">∷ Спрей</button>
+              </div>
+
+              <label class="brush-inline" style="cursor:pointer;">
+                <input type="checkbox" id="chkReplace" />
+                <span>Заменять</span>
+              </label>
+
+              <div class="brush-inline" id="fanDirBar" style="display:none;">
+                <span style="color:#38bdf8;font-weight:700;">Поток вентилятора:</span>
+                <button class="mini-btn active" data-fandir="0">→</button>
+                <button class="mini-btn" data-fandir="1">↓</button>
+                <button class="mini-btn" data-fandir="2">←</button>
+                <button class="mini-btn" data-fandir="3">↑</button>
+              </div>
+
+              <div class="selected-mat-banner" id="selectedBanner"></div>
+            </div>
+
+            <div class="items-strip" id="itemsStrip"></div>
+          </div>
+
+          <div class="category-corner" id="categoryCorner"></div>
+        </section>
+      </div>
+
+      <!-- GAME SETTINGS MODAL -->
+      <div class="modal-backdrop hidden" id="settingsModal">
+        <div class="modal-window">
+          <div class="modal-header">
+            <div class="modal-title">Настройки игры и вычислительного движка</div>
+            <button class="btn" id="btnCloseSettings">✕ Закрыть</button>
+          </div>
+
+          <div>
+            <div class="section-title" style="margin-bottom:8px;">
+              Распределение нагрузки: Видеокарта (GPU) и Процессор (CPU)
+            </div>
+            <div class="compute-cards">
+              <div class="compute-card active" data-cmode="gpu90">
+                <div class="compute-card-title">Максимум GPU (90% GPU / 10% CPU)</div>
+                <div class="sub-hint">
+                  Основной режим: 12-проходный шейдерный расчёт света, тепла и HDR-оптики на видеокарте, минимум нагрузки на процессор.
+                </div>
+                <div class="compute-bar"><div class="compute-bar-gpu" style="width:90%"></div></div>
+              </div>
+              <div class="compute-card" data-cmode="balance70">
+                <div class="compute-card-title">Режим «Баланс» (70% GPU / 30% CPU)</div>
+                <div class="sub-hint">
+                  Переносит дополнительные итерации аэродинамики, электроцепей и теплообмена на CPU (30%), оставляя 70% на GPU.
+                </div>
+                <div class="compute-bar"><div class="compute-bar-gpu" style="width:70%"></div></div>
+              </div>
+            </div>
+            <div class="sub-hint" id="gpuHardwareInfo" style="margin-top:6px;color:#93c5fd;"></div>
+          </div>
+
+          <div class="settings-grid">
+            <div class="toggle-row">
+              <span>Разрешение физического поля</span>
+              <select class="dark-select" id="selResolution" style="width:155px;">
+                <option value="standard">Стандарт (480×270)</option>
+                <option value="high">Высокое (576×324)</option>
+                <option value="ultra">Ультра (680×382)</option>
+              </select>
+            </div>
+
+            <div class="toggle-row">
+              <span>Подшаги физики за кадр: <strong id="valSubsteps">3</strong></span>
+              <input type="range" id="rngSubsteps" min="1" max="6" step="1" value="3" style="width:110px;" />
+            </div>
+
+            <label class="toggle-row" style="cursor:pointer;">
+              <span>PBR микро-текстуры материалов</span>
+              <input type="checkbox" id="chkTextures" checked />
+            </label>
+
+            <label class="toggle-row" style="cursor:pointer;">
+              <span>HDR свечение плазмы и металла (Bloom)</span>
+              <input type="checkbox" id="chkBloom" checked />
+            </label>
+
+            <label class="toggle-row" style="cursor:pointer;">
+              <span>Преломление стекла и блики воды</span>
+              <input type="checkbox" id="chkSpec" checked />
+            </label>
+
+            <label class="toggle-row" style="cursor:pointer;">
+              <span>Тепловое марево горячего воздуха</span>
+              <input type="checkbox" id="chkShimmer" checked />
+            </label>
+
+            <label class="toggle-row" style="cursor:pointer;">
+              <span>Векторы ветра поверх поля</span>
+              <input type="checkbox" id="chkVectors" />
+            </label>
+
+            <label class="toggle-row" style="cursor:pointer;">
+              <span>Звуковой синтез взрывов и дуг</span>
+              <input type="checkbox" id="chkSound" checked />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- EXIT / SAVE / EXPORT MODAL -->
+      <div class="modal-backdrop hidden" id="exitModal">
+        <div class="modal-window" style="max-width:460px;">
+          <div class="modal-header">
+            <div class="modal-title">Меню PIXPHYSO</div>
+            <button class="btn" id="btnCloseExit">✕ Назад в игру</button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:9px;">
+            ${
+              typeof window !== 'undefined' && window.location.protocol !== 'file:'
+                ? `<a class="btn btn-primary" href="/PIXPHYSO-Release.zip" download="PIXPHYSO-Release.zip" style="height:38px;text-decoration:none;">
+                    📦 Скачать готовую игру архивом (PIXPHYSO-Release.zip)
+                   </a>
+                   <a class="btn" href="/PIXPHYSO.html" download="PIXPHYSO.html" style="height:38px;text-decoration:none;">
+                    🚀 Скачать одним файлом (PIXPHYSO.html — двойной клик)
+                   </a>`
+                : ''
+            }
+            <button class="btn" id="btnSavePng" style="height:38px;">
+              📸 Сохранить HD-скриншот симуляции (.PNG)
+            </button>
+            <button class="btn" id="btnExportSave" style="height:38px;">
+              💾 Экспортировать мир в файл (.pixphyso.json)
+            </button>
+            <label class="btn" style="height:38px;cursor:pointer;">
+              📂 Загрузить сохранённый мир из файла
+              <input type="file" id="inpImportSave" accept=".json" style="display:none;" />
+            </label>
+            <button class="btn btn-danger" id="btnResetLab" style="height:38px;">
+              🔄 Сбросить всё и вернуться к стартовой лаборатории
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.simCanvas = this.root.querySelector('#simCanvas')!;
+    this.hudCanvas = this.root.querySelector('#hudCanvas')!;
+    this.hudCtx = this.hudCanvas.getContext('2d')!;
+    this.canvasWrap = this.root.querySelector('#canvasWrap')!;
+    this.canvasFrame = this.root.querySelector('#canvasFrame')!;
+
+    this.probeEl = this.root.querySelector('#probeReadout')!;
+    this.telemetryEl = this.root.querySelector('#telemetryReadout')!;
+    this.computeBadgeEl = this.root.querySelector('#computeBadge')!;
+    this.itemsStripEl = this.root.querySelector('#itemsStrip')!;
+    this.selectedBannerEl = this.root.querySelector('#selectedBanner')!;
+    this.fanDirBarEl = this.root.querySelector('#fanDirBar')!;
+    this.settingsModalEl = this.root.querySelector('#settingsModal')!;
+    this.exitModalEl = this.root.querySelector('#exitModal')!;
+
+    const compassMount = this.root.querySelector('#windCompassMount') as HTMLElement;
+    this.windCompass = new WindCompass(
+      compassMount,
+      this.engine.world.env.windAngleDeg,
+      this.engine.world.env.windSpeed,
+      (deg) => {
+        this.engine.world.env.windAngleDeg = deg;
+        this.markCustomPreset();
+        this.syncEnvironmentUI();
+      }
+    );
+
+    this.renderCategories();
+    this.renderItemsStrip();
+    this.syncEnvironmentUI();
+    this.bindControls();
+    this.bindCanvasInput();
+  }
+
+  private fitCanvasViewport(): void {
+    const w = this.engine.world.width;
+    const h = this.engine.world.height;
+
+    this.simCanvas.width = w * 2;
+    this.simCanvas.height = h * 2;
+    this.hudCanvas.width = w * 2;
+    this.hudCanvas.height = h * 2;
+
+    const rect = this.canvasWrap.getBoundingClientRect();
+    const availW = Math.max(200, rect.width - 14);
+    const availH = Math.max(150, rect.height - 14);
+    const aspect = w / h;
+
+    let dispW = availW;
+    let dispH = dispW / aspect;
+    if (dispH > availH) {
+      dispH = availH;
+      dispW = dispH * aspect;
+    }
+
+    this.canvasFrame.style.width = `${Math.floor(dispW)}px`;
+    this.canvasFrame.style.height = `${Math.floor(dispH)}px`;
+  }
+
+  private renderCategories(): void {
+    const corner = this.root.querySelector('#categoryCorner')!;
+    corner.innerHTML = '';
+
+    for (const cat of CATEGORIES) {
+      const count =
+        cat.id === 'all'
+          ? SELECTABLE_MATERIALS.length
+          : SELECTABLE_MATERIALS.filter((m) => m.category === cat.id).length;
+
+      const btn = document.createElement('button');
+      btn.className = `cat-btn ${this.selectedCategory === cat.id ? 'active' : ''}`;
+      btn.innerHTML = `
+        <span>${cat.shortLabel}</span>
+        <span class="cat-count">${count}</span>
+      `;
+      btn.addEventListener('click', () => {
+        this.selectedCategory = cat.id;
+        this.renderCategories();
+        this.renderItemsStrip();
+      });
+      corner.appendChild(btn);
+    }
+  }
+
+  private renderItemsStrip(): void {
+    const q = this.searchQuery.trim().toLowerCase();
+    const filtered = SELECTABLE_MATERIALS.filter((m) => {
+      if (this.selectedCategory !== 'all' && m.category !== this.selectedCategory) return false;
+      if (q && !m.name.toLowerCase().includes(q) && !m.shortDesc.toLowerCase().includes(q)) return false;
+      return true;
+    });
+
+    this.itemsStripEl.innerHTML = '';
+    for (const def of filtered) {
+      const card = document.createElement('button');
+      card.className = `item-card ${def.id === this.selectedMatId ? 'active' : ''}`;
+      card.title = `${def.name} — ${def.shortDesc}`;
+
+      const thumbUrl = getMaterialThumbnailUrl(def);
+      const subText =
+        def.state === 'tool'
+          ? 'Инструмент'
+          : def.state === 'energy'
+          ? 'Энергия'
+          : def.density >= 10
+          ? `${Math.round(def.density)} кг/м³`
+          : `${def.density} кг/м³`;
+
+      card.innerHTML = `
+        <img class="item-thumb" src="${thumbUrl}" alt="${def.name}" draggable="false" />
+        <div class="item-meta">
+          <div class="item-name">${def.name}</div>
+          <div class="item-sub">${subText}</div>
+        </div>
+      `;
+
+      card.addEventListener('click', () => {
+        this.selectMaterial(def.id);
+      });
+      this.itemsStripEl.appendChild(card);
+    }
+
+    this.updateSelectedBanner();
+  }
+
+  private selectMaterial(matId: number): void {
+    this.selectedMatId = matId;
+    this.fanDirBarEl.style.display = matId === MAT.FAN ? 'flex' : 'none';
+    this.renderItemsStrip();
+  }
+
+  private updateSelectedBanner(): void {
+    const def = MATERIAL_BY_ID[this.selectedMatId];
+    this.selectedBannerEl.textContent = `${def.name}: ${def.shortDesc}`;
+  }
+
+  private markCustomPreset(): void {
+    this.engine.world.env.preset = 'custom';
+  }
+
+  private windDirectionName(deg: number): string {
+    const d = ((deg % 360) + 360) % 360;
+    if (d >= 337 || d < 23) return `${d}° (Восток →)`;
+    if (d < 68) return `${d}° (ЮВ ↘)`;
+    if (d < 113) return `${d}° (Вниз ↓)`;
+    if (d < 158) return `${d}° (ЮЗ ↙)`;
+    if (d < 203) return `${d}° (Запад ←)`;
+    if (d < 248) return `${d}° (СЗ ↖)`;
+    if (d < 293) return `${d}° (Вверх ↑)`;
+    return `${d}° (СВ ↗)`;
+  }
+
+  private syncEnvironmentUI(): void {
+    const env = this.engine.world.env;
+
+    this.root.querySelectorAll<HTMLButtonElement>('.preset-tab').forEach((b) => {
+      b.classList.toggle('active', b.dataset.preset === env.preset);
+    });
+
+    const presetLabel = this.root.querySelector('#presetStatusLabel')!;
+    presetLabel.textContent =
+      env.preset === 'street' ? 'УЛИЦА' : env.preset === 'home' ? 'ДОМ' : 'СВОЙ РЕЖИМ';
+
+    (this.root.querySelector('#rngAmbTemp') as HTMLInputElement).value = String(env.ambientTempC);
+    this.root.querySelector('#valAmbTemp')!.textContent = `${env.ambientTempC} °C`;
+
+    (this.root.querySelector('#rngHumidity') as HTMLInputElement).value = String(env.humidity);
+    this.root.querySelector('#valHumidity')!.textContent = `${env.humidity} %`;
+
+    (this.root.querySelector('#rngPressure') as HTMLInputElement).value = String(env.pressureKPa);
+    this.root.querySelector('#valPressure')!.textContent = `${env.pressureKPa.toFixed(1).replace('.', ',')} кПа`;
+
+    const boilH2O = ThermalSolver.boilingPointAtPressure(100, env.pressureKPa);
+    this.root.querySelector('#boilHint')!.textContent = `Кипение H₂O при этом давлении: ${boilH2O.toFixed(1)} °C`;
+
+    (this.root.querySelector('#rngGravity') as HTMLInputElement).value = String(env.gravity);
+    this.root.querySelector('#valGravity')!.textContent = `${env.gravity.toFixed(2).replace('.', ',')} м/с²`;
+
+    (this.root.querySelector('#rngWindSpeed') as HTMLInputElement).value = String(env.windSpeed);
+    this.root.querySelector('#valWindSpeed')!.textContent = `${env.windSpeed.toFixed(1).replace('.', ',')} м/с`;
+    this.root.querySelector('#valWindAngle')!.textContent = this.windDirectionName(env.windAngleDeg);
+
+    (this.root.querySelector('#chkWindGusts') as HTMLInputElement).checked = env.windGusts;
+    (this.root.querySelector('#selBoundary') as HTMLSelectElement).value = env.boundary;
+
+    this.windCompass.setValues(env.windAngleDeg, env.windSpeed);
+  }
+
+  private bindControls(): void {
+    // Horizontal wheel scroll on bottom items strip
+    this.itemsStripEl.addEventListener(
+      'wheel',
+      (e) => {
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+          e.preventDefault();
+          this.itemsStripEl.scrollLeft += e.deltaY;
+        }
+      },
+      { passive: false }
+    );
+
+    const btnPlayPause = this.root.querySelector('#btnPlayPause') as HTMLButtonElement;
+    const syncPlayBtn = () => {
+      btnPlayPause.textContent = this.engine.paused ? '▶ Старт' : '⏸ Пауза';
+      btnPlayPause.classList.toggle('btn-primary', !this.engine.paused);
+    };
+    btnPlayPause.addEventListener('click', () => {
+      this.engine.paused = !this.engine.paused;
+      syncPlayBtn();
+    });
+
+    this.root.querySelector('#btnStep')!.addEventListener('click', () => {
+      this.engine.paused = true;
+      syncPlayBtn();
+      this.engine.stepFrame(this.settings, true);
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('#speedBar .speed-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.engine.speedMultiplier = Number(btn.dataset.spd || '1');
+        this.root.querySelectorAll('#speedBar .speed-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+
+    this.root.querySelector('#btnUndo')!.addEventListener('click', () => {
+      this.engine.world.popUndo();
+    });
+
+    this.root.querySelector('#btnClear')!.addEventListener('click', () => {
+      this.engine.world.clear();
+    });
+
+    // Environment Presets & Sliders
+    this.root.querySelectorAll<HTMLButtonElement>('.preset-tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const p = tab.dataset.preset as 'street' | 'home' | 'custom';
+        if (p === 'street' || p === 'home') {
+          this.engine.world.applyPreset(p);
+        } else {
+          this.engine.world.env.preset = 'custom';
+        }
+        this.syncEnvironmentUI();
+      });
+    });
+
+    this.root.querySelector('#btnResetEnv')!.addEventListener('click', () => {
+      this.engine.world.resetEnvironment();
+      this.syncEnvironmentUI();
+    });
+
+    this.root.querySelector('#rngAmbTemp')!.addEventListener('input', (e) => {
+      this.engine.world.env.ambientTempC = Number((e.target as HTMLInputElement).value);
+      this.markCustomPreset();
+      this.syncEnvironmentUI();
+    });
+
+    this.root.querySelector('#rngHumidity')!.addEventListener('input', (e) => {
+      this.engine.world.env.humidity = Number((e.target as HTMLInputElement).value);
+      this.markCustomPreset();
+      this.syncEnvironmentUI();
+    });
+
+    this.root.querySelector('#rngPressure')!.addEventListener('input', (e) => {
+      this.engine.world.env.pressureKPa = Number((e.target as HTMLInputElement).value);
+      this.markCustomPreset();
+      this.syncEnvironmentUI();
+    });
+
+    this.root.querySelector('#rngGravity')!.addEventListener('input', (e) => {
+      this.engine.world.env.gravity = Number((e.target as HTMLInputElement).value);
+      this.markCustomPreset();
+      this.syncEnvironmentUI();
+    });
+
+    this.root.querySelector('#rngWindSpeed')!.addEventListener('input', (e) => {
+      this.engine.world.env.windSpeed = Number((e.target as HTMLInputElement).value);
+      this.markCustomPreset();
+      this.syncEnvironmentUI();
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-wdir]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.engine.world.env.windAngleDeg = Number(btn.dataset.wdir);
+        if (this.engine.world.env.windSpeed < 1) {
+          this.engine.world.env.windSpeed = 8.0;
+        }
+        this.markCustomPreset();
+        this.syncEnvironmentUI();
+      });
+    });
+
+    this.root.querySelector('#chkWindGusts')!.addEventListener('change', (e) => {
+      this.engine.world.env.windGusts = (e.target as HTMLInputElement).checked;
+      this.markCustomPreset();
+      this.syncEnvironmentUI();
+    });
+
+    this.root.querySelector('#selDisplayMode')!.addEventListener('change', (e) => {
+      this.displayMode = (e.target as HTMLSelectElement).value as DisplayMode;
+    });
+
+    this.root.querySelector('#selBoundary')!.addEventListener('change', (e) => {
+      this.engine.world.env.boundary = (e.target as HTMLSelectElement).value as BoundaryMode;
+      this.markCustomPreset();
+      this.syncEnvironmentUI();
+    });
+
+    // Demo Scenes
+    const selDemo = this.root.querySelector('#selDemoScene') as HTMLSelectElement;
+    const demoHint = this.root.querySelector('#demoDescHint')!;
+    selDemo.addEventListener('change', () => {
+      const scene = DEMO_SCENES[Number(selDemo.value)];
+      if (scene) demoHint.textContent = scene.subtitle;
+    });
+    this.root.querySelector('#btnLoadDemo')!.addEventListener('click', () => {
+      const scene = DEMO_SCENES[Number(selDemo.value)];
+      if (scene) {
+        this.engine.world.pushUndo();
+        scene.build(this.engine.world);
+      }
+    });
+
+    // Search & Brush toolbar
+    this.root.querySelector('#inpSearch')!.addEventListener('input', (e) => {
+      this.searchQuery = (e.target as HTMLInputElement).value;
+      this.renderItemsStrip();
+    });
+
+    const rngBrush = this.root.querySelector('#rngBrush') as HTMLInputElement;
+    const valBrush = this.root.querySelector('#valBrush')!;
+    rngBrush.addEventListener('input', () => {
+      this.brushRadius = Number(rngBrush.value);
+      valBrush.textContent = String(this.brushRadius);
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('#shapeButtons [data-shape]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.brushShape = btn.dataset.shape as BrushShape;
+        this.root.querySelectorAll('#shapeButtons [data-shape]').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+
+    this.root.querySelector('#chkReplace')!.addEventListener('change', (e) => {
+      this.replaceMode = (e.target as HTMLInputElement).checked;
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('#fanDirBar [data-fandir]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.engine.world.activeFanDir = Number(btn.dataset.fandir) as FanDirection;
+        this.root.querySelectorAll('#fanDirBar [data-fandir]').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+
+    // Game Settings Modal
+    const openSettings = () => {
+      this.root.querySelector('#gpuHardwareInfo')!.textContent = `Активный графический ускоритель: ${this.gpu.rendererName}`;
+      this.settingsModalEl.classList.remove('hidden');
+    };
+    this.root.querySelector('#btnSettings')!.addEventListener('click', openSettings);
+    this.computeBadgeEl.addEventListener('click', openSettings);
+    this.root.querySelector('#btnCloseSettings')!.addEventListener('click', () => {
+      this.settingsModalEl.classList.add('hidden');
+    });
+    this.settingsModalEl.addEventListener('click', (e) => {
+      if (e.target === this.settingsModalEl) this.settingsModalEl.classList.add('hidden');
+    });
+
+    this.root.querySelectorAll<HTMLElement>('[data-cmode]').forEach((card) => {
+      card.addEventListener('click', () => {
+        this.settings.computeMode = card.dataset.cmode as 'gpu90' | 'balance70';
+        this.root.querySelectorAll('[data-cmode]').forEach((c) => c.classList.remove('active'));
+        card.classList.add('active');
+      });
+    });
+
+    this.root.querySelector('#selResolution')!.addEventListener('change', (e) => {
+      this.settings.resolutionPreset = (e.target as HTMLSelectElement).value as GameSettings['resolutionPreset'];
+      if (this.engine.applySettings(this.settings)) {
+        this.fitCanvasViewport();
+        DEMO_SCENES[0].build(this.engine.world);
+      }
+    });
+
+    this.root.querySelector('#rngSubsteps')!.addEventListener('input', (e) => {
+      this.settings.substeps = Number((e.target as HTMLInputElement).value);
+      this.root.querySelector('#valSubsteps')!.textContent = String(this.settings.substeps);
+    });
+
+    this.root.querySelector('#chkTextures')!.addEventListener('change', (e) => {
+      this.settings.realisticTextures = (e.target as HTMLInputElement).checked;
+    });
+    this.root.querySelector('#chkBloom')!.addEventListener('change', (e) => {
+      this.settings.hdrBloom = (e.target as HTMLInputElement).checked;
+    });
+    this.root.querySelector('#chkSpec')!.addEventListener('change', (e) => {
+      this.settings.refractionAndSpec = (e.target as HTMLInputElement).checked;
+    });
+    this.root.querySelector('#chkShimmer')!.addEventListener('change', (e) => {
+      this.settings.heatShimmer = (e.target as HTMLInputElement).checked;
+    });
+    this.root.querySelector('#chkVectors')!.addEventListener('change', (e) => {
+      this.settings.airVectorsOverlay = (e.target as HTMLInputElement).checked;
+    });
+    this.root.querySelector('#chkSound')!.addEventListener('change', (e) => {
+      this.settings.soundEnabled = (e.target as HTMLInputElement).checked;
+    });
+
+    // Exit / Save / Export Modal
+    this.root.querySelector('#btnExit')!.addEventListener('click', () => {
+      this.exitModalEl.classList.remove('hidden');
+    });
+    this.root.querySelector('#btnCloseExit')!.addEventListener('click', () => {
+      this.exitModalEl.classList.add('hidden');
+    });
+    this.exitModalEl.addEventListener('click', (e) => {
+      if (e.target === this.exitModalEl) this.exitModalEl.classList.add('hidden');
+    });
+
+    this.root.querySelector('#btnSavePng')!.addEventListener('click', () => {
+      const a = document.createElement('a');
+      a.download = `pixphyso-${Date.now()}.png`;
+      a.href = this.simCanvas.toDataURL('image/png');
+      a.click();
+    });
+
+    this.root.querySelector('#btnExportSave')!.addEventListener('click', () => {
+      const w = this.engine.world;
+      const payload = {
+        version: 2,
+        width: w.width,
+        height: w.height,
+        env: w.env,
+        mat: Array.from(w.mat),
+        temp: Array.from(w.temp),
+        meta: Array.from(w.meta),
+      };
+      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.download = `pixphyso-world-${Date.now()}.pixphyso.json`;
+      a.href = URL.createObjectURL(blob);
+      a.click();
+    });
+
+    this.root.querySelector('#inpImportSave')!.addEventListener('change', async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      try {
+        const txt = await file.text();
+        const parsed = JSON.parse(txt);
+        if (parsed.width && parsed.height && Array.isArray(parsed.mat)) {
+          this.engine.world.resize(parsed.width, parsed.height);
+          this.engine.world.mat.set(parsed.mat);
+          if (Array.isArray(parsed.temp)) this.engine.world.temp.set(parsed.temp);
+          if (Array.isArray(parsed.meta)) this.engine.world.meta.set(parsed.meta);
+          if (parsed.env) Object.assign(this.engine.world.env, parsed.env);
+          this.fitCanvasViewport();
+          this.syncEnvironmentUI();
+          this.exitModalEl.classList.add('hidden');
+        }
+      } catch (err) {
+        console.error('Import failed:', err);
+      }
+    });
+
+    this.root.querySelector('#btnResetLab')!.addEventListener('click', () => {
+      DEMO_SCENES[0].build(this.engine.world);
+      this.exitModalEl.classList.add('hidden');
+    });
+  }
+
+  private eventToSimCoords(e: PointerEvent | WheelEvent): [number, number] {
+    const rect = this.simCanvas.getBoundingClientRect();
+    const u = (e.clientX - rect.left) / Math.max(1, rect.width);
+    const v = (e.clientY - rect.top) / Math.max(1, rect.height);
+    const sx = Math.max(0, Math.min(this.engine.world.width - 1, Math.floor(u * this.engine.world.width)));
+    const sy = Math.max(0, Math.min(this.engine.world.height - 1, Math.floor(v * this.engine.world.height)));
+    return [sx, sy];
+  }
+
+  private bindCanvasInput(): void {
+    this.canvasFrame.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    this.canvasFrame.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 1 : -1;
+        this.brushRadius = Math.max(0, Math.min(32, this.brushRadius + delta));
+        (this.root.querySelector('#rngBrush') as HTMLInputElement).value = String(this.brushRadius);
+        this.root.querySelector('#valBrush')!.textContent = String(this.brushRadius);
+      },
+      { passive: false }
+    );
+
+    this.canvasFrame.addEventListener('pointerdown', (e) => {
+      const [sx, sy] = this.eventToSimCoords(e);
+      this.pointerSimX = sx;
+      this.pointerSimY = sy;
+      this.prevSimX = sx;
+      this.prevSimY = sy;
+      this.pointerDown = true;
+      this.pointerErase = e.button === 2;
+      this.pointerInteractedSwitch = false;
+      this.canvasFrame.setPointerCapture(e.pointerId);
+
+      // Direct click on Switch or Button on canvas flips/presses it!
+      if (
+        !this.pointerErase &&
+        this.selectedMatId !== MAT.TOOL_ERASER &&
+        this.selectedMatId !== MAT.SWITCH &&
+        this.selectedMatId !== MAT.BUTTON &&
+        !this.replaceMode
+      ) {
+        if (this.engine.world.interactClickAt(sx, sy)) {
+          this.pointerInteractedSwitch = true;
+          return;
+        }
+      }
+
+      if (!this.pointerErase && this.selectedMatId === MAT.TOOL_HAND) {
+        this.engine.startHandGrab(sx, sy, this.brushRadius);
+        return;
+      }
+
+      this.engine.world.pushUndo();
+
+      if (!this.pointerErase && (this.brushShape === 'line' || this.shiftHeld)) {
+        this.lineStartX = sx;
+        this.lineStartY = sy;
+        return;
+      }
+
+      this.engine.applyBrushStroke(
+        sx,
+        sy,
+        sx,
+        sy,
+        this.selectedMatId,
+        this.brushRadius,
+        this.brushShape,
+        this.replaceMode,
+        this.pointerErase
+      );
+    });
+
+    this.canvasFrame.addEventListener('pointermove', (e) => {
+      const [sx, sy] = this.eventToSimCoords(e);
+      this.pointerSimX = sx;
+      this.pointerSimY = sy;
+
+      if (!this.pointerDown || this.pointerInteractedSwitch) return;
+
+      if (!this.pointerErase && this.selectedMatId === MAT.TOOL_HAND) {
+        this.engine.moveHandGrab(sx, sy);
+        return;
+      }
+
+      if (!this.pointerErase && (this.brushShape === 'line' || this.shiftHeld) && this.lineStartX >= 0) {
+        return; // Previewed on HUD canvas, committed on pointerup
+      }
+
+      this.engine.applyBrushStroke(
+        this.prevSimX,
+        this.prevSimY,
+        sx,
+        sy,
+        this.selectedMatId,
+        this.brushRadius,
+        this.brushShape,
+        this.replaceMode,
+        this.pointerErase
+      );
+      this.prevSimX = sx;
+      this.prevSimY = sy;
+    });
+
+    const finishPointer = () => {
+      if (!this.pointerDown) return;
+      if (
+        !this.pointerErase &&
+        !this.pointerInteractedSwitch &&
+        (this.brushShape === 'line' || this.shiftHeld) &&
+        this.lineStartX >= 0
+      ) {
+        this.engine.applyBrushStroke(
+          this.lineStartX,
+          this.lineStartY,
+          this.pointerSimX,
+          this.pointerSimY,
+          this.selectedMatId,
+          this.brushRadius,
+          'circle',
+          this.replaceMode,
+          false
+        );
+      }
+      if (this.engine.world.hand.active) {
+        this.engine.world.releaseHand(false);
+      }
+      this.pointerDown = false;
+      this.pointerInteractedSwitch = false;
+      this.lineStartX = -1;
+      this.lineStartY = -1;
+    };
+
+    this.canvasFrame.addEventListener('pointerup', finishPointer);
+    this.canvasFrame.addEventListener('pointercancel', finishPointer);
+    this.canvasFrame.addEventListener('pointerleave', () => {
+      if (!this.pointerDown) {
+        this.pointerSimX = -1;
+        this.pointerSimY = -1;
+      }
+    });
+  }
+
+  private bindKeyboard(): void {
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Shift') this.shiftHeld = true;
+      if (document.activeElement?.tagName === 'INPUT') return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        (this.root.querySelector('#btnPlayPause') as HTMLButtonElement).click();
+      } else if (e.code === 'KeyF') {
+        (this.root.querySelector('#btnStep') as HTMLButtonElement).click();
+      } else if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
+        e.preventDefault();
+        this.engine.world.popUndo();
+      } else if (e.code === 'KeyR' && this.selectedMatId === MAT.FAN) {
+        this.engine.world.activeFanDir = ((this.engine.world.activeFanDir + 1) & 3) as FanDirection;
+        this.root.querySelectorAll<HTMLButtonElement>('#fanDirBar [data-fandir]').forEach((b) => {
+          b.classList.toggle('active', Number(b.dataset.fandir) === this.engine.world.activeFanDir);
+        });
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.key === 'Shift') this.shiftHeld = false;
+    });
+  }
+
+  private drawHudOverlay(): void {
+    const ctx = this.hudCtx;
+    const cw = this.hudCanvas.width;
+    const ch = this.hudCanvas.height;
+    ctx.clearRect(0, 0, cw, ch);
+
+    const world = this.engine.world;
+    const scaleX = cw / world.width;
+    const scaleY = ch / world.height;
+
+    // 1. Optional Airflow Velocity Vectors Overlay
+    if (this.settings.airVectorsOverlay) {
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+      ctx.lineWidth = 1.3;
+      for (let ay = 1; ay < world.airH; ay += 2) {
+        for (let ax = 1; ax < world.airW; ax += 2) {
+          const ai = ay * world.airW + ax;
+          const vx = world.airVx[ai];
+          const vy = world.airVy[ai];
+          if (Math.abs(vx) + Math.abs(vy) < 0.8) continue;
+          const sx = (ax * world.airScale + 2) * scaleX;
+          const sy = (ay * world.airScale + 2) * scaleY;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.lineTo(sx + vx * 1.4, sy + vy * 1.4);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // 2. Hand Tool Active Grab & Fracture Stress Visualization
+    const hand = world.hand;
+    if (hand.active) {
+      if (!hand.detached) {
+        const ax = (hand.anchorX + 0.5) * scaleX;
+        const ay = (hand.anchorY + 0.5) * scaleY;
+        const tx = (hand.targetX + 0.5) * scaleX;
+        const ty = (hand.targetY + 0.5) * scaleY;
+
+        ctx.strokeStyle = '#f97316';
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = '#fde047';
+        ctx.font = 'bold 12px system-ui';
+        ctx.fillText(`Усилие отрыва: ${Math.round(hand.pullForce)} кПа`, tx + 12, ty - 8);
+      } else {
+        // Draw torn pixel cluster attached to cursor!
+        const cx = Math.round(hand.targetX);
+        const cy = Math.round(hand.targetY);
+        for (const p of hand.cluster) {
+          const def = MATERIAL_BY_ID[p.mat];
+          ctx.fillStyle = `rgb(${def.baseColor[0]}, ${def.baseColor[1]}, ${def.baseColor[2]})`;
+          ctx.fillRect((cx + p.dx) * scaleX, (cy + p.dy) * scaleY, Math.ceil(scaleX), Math.ceil(scaleY));
+        }
+      }
+    }
+
+    // 3. Straight Line Tool Preview
+    if (this.pointerDown && (this.brushShape === 'line' || this.shiftHeld) && this.lineStartX >= 0) {
+      ctx.strokeStyle = 'rgba(52, 211, 153, 0.85)';
+      ctx.lineWidth = Math.max(2, (this.brushRadius * 2 + 1) * scaleX);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo((this.lineStartX + 0.5) * scaleX, (this.lineStartY + 0.5) * scaleY);
+      ctx.lineTo((this.pointerSimX + 0.5) * scaleX, (this.pointerSimY + 0.5) * scaleY);
+      ctx.stroke();
+    }
+
+    // 4. Cursor Brush Reticle & Interactive Switch/Button Hint
+    if (this.pointerSimX >= 0 && this.pointerSimY >= 0) {
+      const px = (this.pointerSimX + 0.5) * scaleX;
+      const py = (this.pointerSimY + 0.5) * scaleY;
+      const rPx = Math.max(2, (this.brushRadius + 0.5) * scaleX);
+
+      ctx.strokeStyle = this.pointerErase ? 'rgba(244, 63, 94, 0.9)' : 'rgba(248, 250, 252, 0.78)';
+      ctx.lineWidth = 1.4;
+      if (this.brushShape === 'square') {
+        ctx.strokeRect(px - rPx, py - rPx, rPx * 2, rPx * 2);
+      } else {
+        ctx.beginPath();
+        ctx.arc(px, py, rPx, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      const hoveredMat = world.mat[this.pointerSimY * world.width + this.pointerSimX];
+      if (hoveredMat === MAT.SWITCH || hoveredMat === MAT.BUTTON) {
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+        ctx.fillRect(px + 12, py - 24, 154, 20);
+        ctx.fillStyle = '#6ee7b7';
+        ctx.font = '600 11px system-ui';
+        ctx.fillText(hoveredMat === MAT.SWITCH ? '⚡ Клик: переключить' : '⚡ Клик: нажать кнопку', px + 17, py - 10);
+      }
+    }
+  }
+
+  private updateStatusHud(): void {
+    // Compute workload display matching active mode (90/10 GPU Priority vs 70/30 Balance Mode)
+    const targetGpuPct = this.settings.computeMode === 'gpu90' ? 90 : 70;
+    const jitter = Math.round(Math.sin(performance.now() * 0.002) * 1);
+    const gpuPct = this.gpu.gpuAvailable ? targetGpuPct + jitter : 0;
+    const cpuPct = 100 - gpuPct;
+
+    const modeTag = this.settings.computeMode === 'gpu90' ? 'GPU Ультра' : 'Баланс';
+    this.computeBadgeEl.textContent = `${gpuPct}% GPU · ${cpuPct}% CPU (${modeTag})`;
+
+    this.telemetryEl.textContent = `${this.fps} FPS · ${this.particleCount.toLocaleString('ru-RU')} частиц · ${gpuPct}% GPU / ${cpuPct}% CPU · WebGL2 HDR`;
+
+    if (this.pointerSimX >= 0 && this.pointerSimY >= 0) {
+      const pr = this.engine.world.probeAt(this.pointerSimX, this.pointerSimY);
+      const tempK = Math.max(0, pr.tempC + 273.15);
+      const windMag = Math.hypot(pr.windVx, pr.windVy);
+      this.probeEl.textContent = `[${pr.x}, ${pr.y}] ${pr.matName} · T: ${pr.tempC.toFixed(1)} °C (${Math.round(tempK)} K) · P: ${pr.pressureKPa.toFixed(1)} кПа · Ветер: ${windMag.toFixed(1)} м/с · U: ${pr.voltage.toFixed(1)} В · ρ: ${pr.density} кг/м³`;
+    }
+  }
+
+  private startLoop(): void {
+    const tick = () => {
+      const cpuMs = this.engine.stepFrame(this.settings, false);
+      const { gpuMs, particleCount } = this.gpu.render(this.engine.world, this.settings, this.displayMode);
+      this.sound.tick(this.engine.world, this.settings);
+      this.drawHudOverlay();
+
+      this.smoothCpuMs = this.smoothCpuMs * 0.9 + cpuMs * 0.1;
+      this.smoothGpuMs = this.smoothGpuMs * 0.9 + gpuMs * 0.1;
+      this.particleCount = particleCount;
+
+      this.frameCounter++;
+      const now = performance.now();
+      if (now - this.lastFpsStamp >= 500) {
+        this.fps = Math.min(144, Math.round((this.frameCounter * 1000) / (now - this.lastFpsStamp)));
+        this.frameCounter = 0;
+        this.lastFpsStamp = now;
+        this.updateStatusHud();
+      } else if (this.pointerSimX >= 0 && (this.frameCounter & 3) === 0) {
+        this.updateStatusHud();
+      }
+
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+}
