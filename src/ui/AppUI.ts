@@ -109,8 +109,8 @@ export class AppUI {
           <div class="brand-group">
             <img src="${PIXPHYSO_LOGO_URI}" alt="PIXPHYSO" class="brand-logo" />
             <span class="brand-title">PIXPHYSO</span>
-            <span class="compute-badge" id="computeBadge" title="Нажмите для настройки распределения GPU / CPU">
-              90% GPU · 10% CPU
+            <span class="compute-badge" id="computeBadge" title="Нажмите для настройки режима вычислений">
+              GPU рендер · CPU физика
             </span>
           </div>
 
@@ -133,6 +133,7 @@ export class AppUI {
                 ? `<a class="btn btn-primary" href="/PIXPHYSO-Release.zip" download="PIXPHYSO-Release.zip" style="text-decoration:none;" title="Скачать готовый архив игры для запуска на ПК без установки">⬇ Скачать .ZIP</a>`
                 : ''
             }
+            <button class="btn mobile-env" id="btnEnv">Среда</button>
             <button class="btn btn-danger" id="btnClear">Очистить</button>
             <button class="btn" id="btnSettings">⚙ Настройки</button>
             <button class="btn" id="btnExit">Выход</button>
@@ -145,7 +146,7 @@ export class AppUI {
             <div class="panel-section">
               <div class="section-title">
                 <span>Среда симуляции</span>
-                <span id="presetStatusLabel" style="color:#6ee7b7;font-size:10px;">УЛИЦА</span>
+                <span id="presetStatusLabel" style="color:#ffffff;font-size:10px;">УЛИЦА</span>
               </div>
               <div class="preset-tabs">
                 <button class="preset-tab active" data-preset="street">Улица</button>
@@ -195,7 +196,7 @@ export class AppUI {
             <div class="panel-section">
               <div class="section-title">
                 <span>Ветер и направление</span>
-                <span id="valWindAngle" style="color:#f8fafc;">0° (Восток →)</span>
+                <span id="valWindAngle" style="color:#ffffff;">0° (Восток →)</span>
               </div>
               <div class="wind-box">
                 <div id="windCompassMount"></div>
@@ -268,7 +269,7 @@ export class AppUI {
                 Наведите курсор на поле · ЛКМ — рисовать / нажимать кнопки и тумблеры · ПКМ — ластик · Shift — прямая линия
               </div>
               <div class="telemetry-readout" id="telemetryReadout">
-                60 FPS · 90% GPU / 10% CPU · WebGL2 HDR
+                CPU физика · GPU рендер
               </div>
             </footer>
           </main>
@@ -304,7 +305,7 @@ export class AppUI {
               </label>
 
               <div class="brush-inline" id="fanDirBar" style="display:none;">
-                <span style="color:#38bdf8;font-weight:700;">Поток вентилятора:</span>
+                <span style="color:#ffffff;font-weight:700;">Поток вентилятора:</span>
                 <button class="mini-btn active" data-fandir="0">→</button>
                 <button class="mini-btn" data-fandir="1">↓</button>
                 <button class="mini-btn" data-fandir="2">←</button>
@@ -331,25 +332,25 @@ export class AppUI {
 
           <div>
             <div class="section-title" style="margin-bottom:8px;">
-              Распределение нагрузки: Видеокарта (GPU) и Процессор (CPU)
+              Режим вычислений
             </div>
             <div class="compute-cards">
               <div class="compute-card active" data-cmode="gpu90">
-                <div class="compute-card-title">Максимум GPU (90% GPU / 10% CPU)</div>
+                <div class="compute-card-title">Приоритет GPU</div>
                 <div class="sub-hint">
-                  Основной режим: 12-проходный шейдерный расчёт света, тепла и HDR-оптики на видеокарте, минимум нагрузки на процессор.
+                  Физика рассчитывается процессором; графика и эффекты — видеокартой.
                 </div>
-                <div class="compute-bar"><div class="compute-bar-gpu" style="width:90%"></div></div>
+                
               </div>
               <div class="compute-card" data-cmode="balance70">
-                <div class="compute-card-title">Режим «Баланс» (70% GPU / 30% CPU)</div>
+                <div class="compute-card-title">Режим «Баланс»</div>
                 <div class="sub-hint">
-                  Переносит дополнительные итерации аэродинамики, электроцепей и теплообмена на CPU (30%), оставляя 70% на GPU.
+                  Увеличивает число итераций аэродинамики, электроцепей и теплообмена на CPU.
                 </div>
-                <div class="compute-bar"><div class="compute-bar-gpu" style="width:70%"></div></div>
+                
               </div>
             </div>
-            <div class="sub-hint" id="gpuHardwareInfo" style="margin-top:6px;color:#93c5fd;"></div>
+            <div class="sub-hint" id="gpuHardwareInfo" style="margin-top:6px;color:#ffffff;"></div>
           </div>
 
           <div class="settings-grid">
@@ -919,6 +920,7 @@ export class AppUI {
   }
 
   private bindCanvasInput(): void {
+    this.root.querySelector('#btnEnv')!.addEventListener('click', () => { this.root.querySelector('.env-sidebar')!.classList.toggle('mobile-open'); });
     this.canvasFrame.addEventListener('contextmenu', (e) => e.preventDefault());
 
     this.canvasFrame.addEventListener(
@@ -944,6 +946,14 @@ export class AppUI {
       this.pointerInteractedSwitch = false;
       this.canvasFrame.setPointerCapture(e.pointerId);
 
+      if (!this.pointerErase && this.selectedMatId === MAT.TOOL_SENSOR) {
+        const pins = this.engine.world.sensors;
+        const existing = pins.findIndex(p => Math.hypot(p.x - sx, p.y - sy) < 4);
+        if (existing >= 0) pins.splice(existing, 1);
+        else if (pins.length < 16) pins.push({ id: Date.now(), x: sx, y: sy });
+        this.pointerInteractedSwitch = true;
+        return;
+      }
       // Direct click on Switch or Button on canvas flips/presses it!
       if (
         !this.pointerErase &&
@@ -1092,7 +1102,7 @@ export class AppUI {
 
     // 1. Optional Airflow Velocity Vectors Overlay
     if (this.settings.airVectorsOverlay) {
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
       ctx.lineWidth = 1.3;
       for (let ay = 1; ay < world.airH; ay += 2) {
         for (let ax = 1; ax < world.airW; ax += 2) {
@@ -1119,7 +1129,7 @@ export class AppUI {
         const tx = (hand.targetX + 0.5) * scaleX;
         const ty = (hand.targetY + 0.5) * scaleY;
 
-        ctx.strokeStyle = '#f97316';
+        ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 2.5;
         ctx.setLineDash([5, 4]);
         ctx.beginPath();
@@ -1128,8 +1138,8 @@ export class AppUI {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        ctx.fillStyle = '#fde047';
-        ctx.font = 'bold 12px system-ui';
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 12px Roboto Mono';
         ctx.fillText(`Усилие отрыва: ${Math.round(hand.pullForce)} кПа`, tx + 12, ty - 8);
       } else {
         // Draw torn pixel cluster attached to cursor!
@@ -1145,7 +1155,7 @@ export class AppUI {
 
     // 3. Straight Line Tool Preview
     if (this.pointerDown && (this.brushShape === 'line' || this.shiftHeld) && this.lineStartX >= 0) {
-      ctx.strokeStyle = 'rgba(52, 211, 153, 0.85)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
       ctx.lineWidth = Math.max(2, (this.brushRadius * 2 + 1) * scaleX);
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -1154,13 +1164,49 @@ export class AppUI {
       ctx.stroke();
     }
 
+    // Controller readouts sample exactly the pinned cell. Prefer empty nearby areas,
+    // penalising overlaps with other callouts and keeping rectangles inside the viewport.
+    const boxes: {x: number; y: number; w: number; h: number}[] = [];
+    for (const pin of world.sensors) {
+      const bw = Math.min(205, cw * 0.7), bh = 90;
+      const px = (pin.x + 0.5) * scaleX, py = (pin.y + 0.5) * scaleY;
+      let best = { x: 0, y: 0, w: bw, h: bh }, bestScore = -Infinity;
+      for (const distance of [24, 65, 115]) for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4;
+        const x = Math.max(2, Math.min(cw - bw - 2, px + Math.cos(a) * (distance + bw / 2) - bw / 2));
+        const y = Math.max(2, Math.min(ch - bh - 2, py + Math.sin(a) * (distance + bh / 2) - bh / 2));
+        let empty = 0;
+        for (let sy = 0; sy < 6; sy++) for (let sx = 0; sx < 10; sx++) {
+          const wx = Math.min(world.width - 1, Math.max(0, Math.floor((x + (sx + .5) * bw / 10) / scaleX)));
+          const wy = Math.min(world.height - 1, Math.max(0, Math.floor((y + (sy + .5) * bh / 6) / scaleY)));
+          if (world.mat[wy * world.width + wx] === MAT.EMPTY) empty++;
+        }
+        const overlaps = boxes.filter(b => x < b.x + b.w && x + bw > b.x && y < b.y + b.h && y + bh > b.y).length;
+        const coversPoint = px >= x && px <= x + bw && py >= y && py <= y + bh;
+        const score = empty - overlaps * 100 - (coversPoint ? 80 : 0) - distance * .01;
+        if (score > bestScore) { bestScore = score; best = { x, y, w: bw, h: bh }; }
+      }
+      boxes.push(best);
+      const pr = world.probeAt(pin.x, pin.y);
+      const tx = Math.max(best.x, Math.min(best.x + bw, px)), ty = Math.max(best.y, Math.min(best.y + bh, py));
+      ctx.strokeStyle = '#fff'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(px, py); ctx.stroke();
+      const angle = Math.atan2(py - ty, px - tx);
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px - 7 * Math.cos(angle - .45), py - 7 * Math.sin(angle - .45));
+      ctx.moveTo(px, py); ctx.lineTo(px - 7 * Math.cos(angle + .45), py - 7 * Math.sin(angle + .45)); ctx.stroke();
+      ctx.fillStyle = '#000'; ctx.fillRect(best.x, best.y, bw, bh); ctx.strokeRect(best.x, best.y, bw, bh);
+      ctx.fillStyle = '#fff'; ctx.font = '11px Roboto Mono, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      const rows = [`[${pin.x}, ${pin.y}] ${pr.matName}`, `T: ${pr.tempC.toFixed(1)} °C`, `P: ${pr.pressureKPa.toFixed(1)} кПа`, `U: ${pr.voltage.toFixed(1)} В`, `ρ: ${pr.density} кг/м³`];
+      rows.forEach((row, i) => ctx.fillText(row, best.x + 5, best.y + 15 + i * 15, bw - 10));
+    }
+
     // 4. Cursor Brush Reticle & Interactive Switch/Button Hint
     if (this.pointerSimX >= 0 && this.pointerSimY >= 0) {
       const px = (this.pointerSimX + 0.5) * scaleX;
       const py = (this.pointerSimY + 0.5) * scaleY;
       const rPx = Math.max(2, (this.brushRadius + 0.5) * scaleX);
 
-      ctx.strokeStyle = this.pointerErase ? 'rgba(244, 63, 94, 0.9)' : 'rgba(248, 250, 252, 0.78)';
+      ctx.strokeStyle = this.pointerErase ? 'rgba(255, 255, 255, 0.9)' : 'rgba(255, 255, 255, 0.78)';
       ctx.lineWidth = 1.4;
       if (this.brushShape === 'square') {
         ctx.strokeRect(px - rPx, py - rPx, rPx * 2, rPx * 2);
@@ -1172,26 +1218,19 @@ export class AppUI {
 
       const hoveredMat = world.mat[this.pointerSimY * world.width + this.pointerSimX];
       if (hoveredMat === MAT.SWITCH || hoveredMat === MAT.BUTTON) {
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.88)';
         ctx.fillRect(px + 12, py - 24, 154, 20);
-        ctx.fillStyle = '#6ee7b7';
-        ctx.font = '600 11px system-ui';
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '600 11px Roboto Mono';
         ctx.fillText(hoveredMat === MAT.SWITCH ? '⚡ Клик: переключить' : '⚡ Клик: нажать кнопку', px + 17, py - 10);
       }
     }
   }
 
   private updateStatusHud(): void {
-    // Compute workload display matching active mode (90/10 GPU Priority vs 70/30 Balance Mode)
-    const targetGpuPct = this.settings.computeMode === 'gpu90' ? 90 : 70;
-    const jitter = Math.round(Math.sin(performance.now() * 0.002) * 1);
-    const gpuPct = this.gpu.gpuAvailable ? targetGpuPct + jitter : 0;
-    const cpuPct = 100 - gpuPct;
-
-    const modeTag = this.settings.computeMode === 'gpu90' ? 'GPU Ультра' : 'Баланс';
-    this.computeBadgeEl.textContent = `${gpuPct}% GPU · ${cpuPct}% CPU (${modeTag})`;
-
-    this.telemetryEl.textContent = `${this.fps} FPS · ${this.particleCount.toLocaleString('ru-RU')} частиц · ${gpuPct}% GPU / ${cpuPct}% CPU · WebGL2 HDR`;
+    const modeTag = this.settings.computeMode === 'gpu90' ? 'Приоритет GPU' : 'Баланс';
+    this.computeBadgeEl.textContent = `${modeTag} · GPU рендер / CPU физика`;
+    this.telemetryEl.textContent = `${this.fps} FPS · ${this.particleCount.toLocaleString('ru-RU')} частиц · CPU физика · GPU рендер`;
 
     if (this.pointerSimX >= 0 && this.pointerSimY >= 0) {
       const pr = this.engine.world.probeAt(this.pointerSimX, this.pointerSimY);

@@ -61,14 +61,14 @@ export class WindCompass {
 
     // Outer dial ring
     const bg = ctx.createRadialGradient(cx, cy, 4, cx, cy, r + 4);
-    bg.addColorStop(0, '#14202c');
-    bg.addColorStop(1, '#090e14');
+    bg.addColorStop(0, '#1e1e1e');
+    bg.addColorStop(1, '#0d0d0d');
     ctx.fillStyle = bg;
     ctx.beginPath();
     ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.28)';
+    ctx.strokeStyle = 'rgba(165, 165, 165, 0.28)';
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
@@ -76,7 +76,7 @@ export class WindCompass {
     for (let i = 0; i < 8; i++) {
       const a = (i * Math.PI) / 4;
       const inner = i % 2 === 0 ? r - 6 : r - 3;
-      ctx.strokeStyle = i % 2 === 0 ? 'rgba(148,163,184,0.65)' : 'rgba(148,163,184,0.28)';
+      ctx.strokeStyle = i % 2 === 0 ? 'rgba(161, 161, 161,0.65)' : 'rgba(161, 161, 161,0.28)';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
@@ -85,8 +85,8 @@ export class WindCompass {
     }
 
     // Cardinal labels (С = Up/270°, В = Right/0°, Ю = Down/90°, З = Left/180°)
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '600 9px system-ui';
+    ctx.fillStyle = '#a1a1a1';
+    ctx.font = '600 9px Roboto Mono';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('С', cx, cy - r + 10);
@@ -103,7 +103,7 @@ export class WindCompass {
     const bx = cx - Math.cos(rad) * 10;
     const by = cy - Math.sin(rad) * 10;
 
-    ctx.strokeStyle = active ? '#38bdf8' : '#64748b';
+    ctx.strokeStyle = active ? '#a5a5a5' : '#727272';
     ctx.lineWidth = 2.6;
     ctx.lineCap = 'round';
     ctx.beginPath();
@@ -112,7 +112,7 @@ export class WindCompass {
     ctx.stroke();
 
     // Arrowhead
-    ctx.fillStyle = active ? '#38bdf8' : '#64748b';
+    ctx.fillStyle = active ? '#a5a5a5' : '#727272';
     ctx.beginPath();
     ctx.moveTo(tx, ty);
     ctx.lineTo(tx - Math.cos(rad - 0.5) * 8, ty - Math.sin(rad - 0.5) * 8);
@@ -123,7 +123,7 @@ export class WindCompass {
     // Center pivot
     ctx.beginPath();
     ctx.arc(cx, cy, 3.2, 0, Math.PI * 2);
-    ctx.fillStyle = '#e2e8f0';
+    ctx.fillStyle = '#e7e7e7';
     ctx.fill();
   }
 }

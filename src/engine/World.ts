@@ -3,6 +3,7 @@ import {
   FanDirection,
   GameSettings,
   HoverProbe,
+  SensorPin,
 } from '../types/physics';
 import { DENSITY_LUT, MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
 
@@ -110,6 +111,7 @@ export class World {
   public gpuStateTexA!: Uint8Array;
   public gpuStateTexB!: Uint8Array;
 
+  public sensors: SensorPin[] = [];
   public stepTick = 1;
   public timeSec = 0;
   public activeFanDir: FanDirection = 0;
@@ -195,6 +197,7 @@ export class World {
     this.airH = Math.ceil(newHeight / this.airScale);
     this.airSize = this.airW * this.airH;
     this.undoStack = [];
+    this.sensors = [];
     this.allocate();
   }
 
@@ -233,6 +236,7 @@ export class World {
 
   public clear(): void {
     this.pushUndo();
+    this.sensors = [];
     this.mat.fill(MAT.EMPTY);
     this.temp.fill(this.env.ambientTempC);
     this.vx.fill(0);

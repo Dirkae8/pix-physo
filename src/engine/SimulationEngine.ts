@@ -144,6 +144,32 @@ export class SimulationEngine {
       return;
     }
 
+    if (matId === MAT.TOOL_SENSOR) return; // Handled by the UI; does not replace the sampled cell.
+
+    if (matId === MAT.TOOL_LASER || matId === MAT.TOOL_CRYO || matId === MAT.TOOL_IGNITE || matId === MAT.TOOL_SPARK) {
+      this.forEachBrushCell(cx, cy, r, shape, (x, y, falloff) => {
+        const i = y * world.width + x;
+        if (matId === MAT.TOOL_CRYO) world.temp[i] = Math.max(-272, world.temp[i] - 160 * falloff);
+        else if (matId === MAT.TOOL_SPARK && world.mat[i] === MAT.EMPTY && world.rand() < 0.12) world.setCell(x, y, MAT.EMBER);
+        else if (matId === MAT.TOOL_IGNITE && world.mat[i] === MAT.EMPTY && world.rand() < 0.2) world.setCell(x, y, MAT.FIRE);
+        else world.temp[i] = Math.min(5500, world.temp[i] + (matId === MAT.TOOL_LASER ? 450 : 120) * falloff);
+      });
+      return;
+    }
+    if (matId === MAT.TOOL_VORTEX || matId === MAT.TOOL_SHOCK || matId === MAT.TOOL_MIXER) {
+      this.forEachBrushCell(cx, cy, r + 3, 'circle', (x, y, falloff) => {
+        const dx = x - cx, dy = y - cy, len = Math.max(1, Math.hypot(dx, dy));
+        const radial = matId === MAT.TOOL_SHOCK;
+        const strength = (radial ? 7 : matId === MAT.TOOL_MIXER ? 2 : 4) * falloff;
+        const vx = (radial ? dx : -dy) / len * strength, vy = (radial ? dy : dx) / len * strength;
+        const ai = world.airIdxFromCell(x, y), i = y * world.width + x;
+        world.airVx[ai] += vx * .1; world.airVy[ai] += vy * .1;
+        if (radial) world.airPressure[ai] += falloff * .5;
+        if (STATE_LUT[world.mat[i]] >= 2 && STATE_LUT[world.mat[i]] <= 5) { world.vx[i] += vx; world.vy[i] += vy; }
+      });
+      return;
+    }
+
     if (matId === MAT.TOOL_HEAT) {
       this.forEachBrushCell(cx, cy, r + 2, shape, (x, y, falloff) => {
         const i = y * world.width + x;
