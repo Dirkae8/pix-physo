@@ -54,6 +54,22 @@ export class AppUI {
   private simCanvas!: HTMLCanvasElement;
   private hudCanvas!: HTMLCanvasElement;
   private hudCtx!: CanvasRenderingContext2D;
+  private hudScale = 1;
+  private thumbnailObserver: IntersectionObserver | null = null;
+  private thumbnailQueue: HTMLImageElement[] = [];
+  private thumbnailFrame = 0;
+
+  private queueThumbnail(img: HTMLImageElement): void {
+    this.thumbnailQueue.push(img);
+    if (this.thumbnailFrame) return;
+    const next = () => {
+      this.thumbnailFrame = 0;
+      const current = this.thumbnailQueue.shift();
+      if (current?.isConnected) current.src = getMaterialThumbnailUrl(MATERIAL_BY_ID[Number(current.dataset.mat)]);
+      if (this.thumbnailQueue.length) this.thumbnailFrame = requestAnimationFrame(next);
+    };
+    this.thumbnailFrame = requestAnimationFrame(next);
+  }
   private canvasWrap!: HTMLElement;
   private canvasFrame!: HTMLElement;
 
@@ -129,7 +145,7 @@ export class AppUI {
 
           <div class="actions-group">
             ${
-              typeof window !== 'undefined' && window.location.protocol !== 'file:'
+              typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)
                 ? `<a class="btn btn-primary" href="/PIXPHYSO-Release.zip" download="PIXPHYSO-Release.zip" style="text-decoration:none;" title="Скачать готовый архив игры для запуска на ПК без установки">⬇ Скачать .ZIP</a>`
                 : ''
             }
@@ -143,6 +159,7 @@ export class AppUI {
         <!-- MIDDLE WORKSPACE: Left Simulation Environment Bar + GPU Viewport -->
         <div class="workspace-middle">
           <aside class="env-sidebar">
+            <button class="btn mobile-env" id="btnCloseEnv">✕ Закрыть среду</button>
             <div class="panel-section">
               <div class="section-title">
                 <span>Среда симуляции</span>
@@ -410,7 +427,7 @@ export class AppUI {
           </div>
           <div style="display:flex;flex-direction:column;gap:9px;">
             ${
-              typeof window !== 'undefined' && window.location.protocol !== 'file:'
+              typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)
                 ? `<a class="btn btn-primary" href="/PIXPHYSO-Release.zip" download="PIXPHYSO-Release.zip" style="height:38px;text-decoration:none;">
                     📦 Скачать готовую игру архивом (PIXPHYSO-Release.zip)
                    </a>
@@ -477,12 +494,9 @@ export class AppUI {
 
     this.simCanvas.width = w * 2;
     this.simCanvas.height = h * 2;
-    this.hudCanvas.width = w * 2;
-    this.hudCanvas.height = h * 2;
-
     const rect = this.canvasWrap.getBoundingClientRect();
-    const availW = Math.max(200, rect.width - 14);
-    const availH = Math.max(150, rect.height - 14);
+    const availW = Math.max(1, rect.width - 4);
+    const availH = Math.max(1, rect.height - 4);
     const aspect = w / h;
 
     let dispW = availW;
@@ -494,6 +508,9 @@ export class AppUI {
 
     this.canvasFrame.style.width = `${Math.floor(dispW)}px`;
     this.canvasFrame.style.height = `${Math.floor(dispH)}px`;
+    this.hudScale = Math.min(2, window.devicePixelRatio || 1);
+    this.hudCanvas.width = Math.max(1, Math.floor(dispW * this.hudScale));
+    this.hudCanvas.height = Math.max(1, Math.floor(dispH * this.hudScale));
   }
 
   private renderCategories(): void {
@@ -529,13 +546,25 @@ export class AppUI {
       return true;
     });
 
+    this.thumbnailObserver?.disconnect();
+    if (this.thumbnailFrame) cancelAnimationFrame(this.thumbnailFrame);
+    this.thumbnailFrame = 0;
+    this.thumbnailQueue = [];
+    this.thumbnailObserver = typeof IntersectionObserver === 'undefined' ? null : new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const img = entry.target as HTMLImageElement;
+        this.queueThumbnail(img);
+        this.thumbnailObserver?.unobserve(img);
+      }
+    }, { root: this.itemsStripEl, rootMargin: '100px' });
     this.itemsStripEl.innerHTML = '';
     for (const def of filtered) {
       const card = document.createElement('button');
       card.className = `item-card ${def.id === this.selectedMatId ? 'active' : ''}`;
       card.title = `${def.name} — ${def.shortDesc}`;
 
-      const thumbUrl = getMaterialThumbnailUrl(def);
+
       const subText =
         def.state === 'tool'
           ? 'Инструмент'
@@ -546,7 +575,7 @@ export class AppUI {
           : `${def.density} кг/м³`;
 
       card.innerHTML = `
-        <img class="item-thumb" src="${thumbUrl}" alt="${def.name}" draggable="false" />
+        <img class="item-thumb" data-mat="${def.id}" alt="" draggable="false" />
         <div class="item-meta">
           <div class="item-name">${def.name}</div>
           <div class="item-sub">${subText}</div>
@@ -557,6 +586,9 @@ export class AppUI {
         this.selectMaterial(def.id);
       });
       this.itemsStripEl.appendChild(card);
+      const img = card.querySelector('img')!;
+      if (this.thumbnailObserver) this.thumbnailObserver.observe(img);
+      else img.src = getMaterialThumbnailUrl(def);
     }
 
     this.updateSelectedBanner();
@@ -921,6 +953,7 @@ export class AppUI {
 
   private bindCanvasInput(): void {
     this.root.querySelector('#btnEnv')!.addEventListener('click', () => { this.root.querySelector('.env-sidebar')!.classList.toggle('mobile-open'); });
+    this.root.querySelector('#btnCloseEnv')!.addEventListener('click', () => { this.root.querySelector('.env-sidebar')!.classList.remove('mobile-open'); });
     this.canvasFrame.addEventListener('contextmenu', (e) => e.preventDefault());
 
     this.canvasFrame.addEventListener(
@@ -1092,8 +1125,9 @@ export class AppUI {
 
   private drawHudOverlay(): void {
     const ctx = this.hudCtx;
-    const cw = this.hudCanvas.width;
-    const ch = this.hudCanvas.height;
+    const cw = this.hudCanvas.width / this.hudScale;
+    const ch = this.hudCanvas.height / this.hudScale;
+    ctx.setTransform(this.hudScale, 0, 0, this.hudScale, 0, 0);
     ctx.clearRect(0, 0, cw, ch);
 
     const world = this.engine.world;

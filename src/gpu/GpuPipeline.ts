@@ -71,6 +71,13 @@ export class GpuPipeline {
   public readonly gpuAvailable: boolean;
   public readonly rendererName: string;
 
+  private uniforms = new WeakMap<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
+  private uniform(program: WebGLProgram, name: string): WebGLUniformLocation | null {
+    let cache = this.uniforms.get(program);
+    if (!cache) { cache = new Map(); this.uniforms.set(program, cache); }
+    if (!cache.has(name)) cache.set(name, this.gl!.getUniformLocation(program, name));
+    return cache.get(name) ?? null;
+  }
   private vao: WebGLVertexArrayObject | null = null;
   private progRadiance: WebGLProgram | null = null;
   private progScene: WebGLProgram | null = null;
@@ -226,6 +233,11 @@ export class GpuPipeline {
     const h = world.height;
     if (this.allocW === w && this.allocH === h && this.texStateA) return;
 
+    // Release the previous resolution's targets instead of accumulating GPU memory.
+    for (const tex of [this.texStateA, this.texStateB, this.texAir]) if (tex) gl.deleteTexture(tex);
+    for (const target of [this.fboRadA, this.fboRadB, this.fboScene, this.fboBloomA, this.fboBloomB]) {
+      if (target) { gl.deleteFramebuffer(target.fbo); gl.deleteTexture(target.tex); }
+    }
     this.allocW = w;
     this.allocH = h;
 
@@ -301,18 +313,18 @@ export class GpuPipeline {
 
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.texStateA);
-    gl.uniform1i(gl.getUniformLocation(this.progRadiance!, 'uStateTexA'), 1);
+    gl.uniform1i(this.uniform(this.progRadiance!, 'uStateTexA'), 1);
 
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.texStateB);
-    gl.uniform1i(gl.getUniformLocation(this.progRadiance!, 'uStateTexB'), 2);
+    gl.uniform1i(this.uniform(this.progRadiance!, 'uStateTexB'), 2);
 
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.texMatStyle);
-    gl.uniform1i(gl.getUniformLocation(this.progRadiance!, 'uMatStyleTex'), 3);
+    gl.uniform1i(this.uniform(this.progRadiance!, 'uMatStyleTex'), 3);
 
     gl.uniform2f(
-      gl.getUniformLocation(this.progRadiance!, 'uTexel'),
+      this.uniform(this.progRadiance!, 'uTexel'),
       1 / this.fboRadA!.w,
       1 / this.fboRadA!.h
     );
@@ -324,8 +336,8 @@ export class GpuPipeline {
       gl.bindFramebuffer(gl.FRAMEBUFFER, radWrite.fbo);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, radRead.tex);
-      gl.uniform1i(gl.getUniformLocation(this.progRadiance!, 'uPrevField'), 0);
-      gl.uniform1i(gl.getUniformLocation(this.progRadiance!, 'uPassIndex'), p);
+      gl.uniform1i(this.uniform(this.progRadiance!, 'uPrevField'), 0);
+      gl.uniform1i(this.uniform(this.progRadiance!, 'uPassIndex'), p);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
       const tmp = radRead;
@@ -340,29 +352,29 @@ export class GpuPipeline {
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texStateA);
-    gl.uniform1i(gl.getUniformLocation(this.progScene!, 'uStateTexA'), 0);
+    gl.uniform1i(this.uniform(this.progScene!, 'uStateTexA'), 0);
 
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.texStateB);
-    gl.uniform1i(gl.getUniformLocation(this.progScene!, 'uStateTexB'), 1);
+    gl.uniform1i(this.uniform(this.progScene!, 'uStateTexB'), 1);
 
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.texAir);
-    gl.uniform1i(gl.getUniformLocation(this.progScene!, 'uAirTex'), 2);
+    gl.uniform1i(this.uniform(this.progScene!, 'uAirTex'), 2);
 
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, radRead.tex);
-    gl.uniform1i(gl.getUniformLocation(this.progScene!, 'uRadianceTex'), 3);
+    gl.uniform1i(this.uniform(this.progScene!, 'uRadianceTex'), 3);
 
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, this.texMatStyle);
-    gl.uniform1i(gl.getUniformLocation(this.progScene!, 'uMatStyleTex'), 4);
+    gl.uniform1i(this.uniform(this.progScene!, 'uMatStyleTex'), 4);
 
-    gl.uniform2f(gl.getUniformLocation(this.progScene!, 'uSimSize'), world.width, world.height);
-    gl.uniform1f(gl.getUniformLocation(this.progScene!, 'uTime'), world.timeSec);
-    gl.uniform1i(gl.getUniformLocation(this.progScene!, 'uDisplayMode'), DISPLAY_MODE_CODE[displayMode]);
-    gl.uniform1i(gl.getUniformLocation(this.progScene!, 'uRealisticTextures'), settings.realisticTextures ? 1 : 0);
-    gl.uniform1i(gl.getUniformLocation(this.progScene!, 'uRefractionSpec'), settings.refractionAndSpec ? 1 : 0);
+    gl.uniform2f(this.uniform(this.progScene!, 'uSimSize'), world.width, world.height);
+    gl.uniform1f(this.uniform(this.progScene!, 'uTime'), world.timeSec);
+    gl.uniform1i(this.uniform(this.progScene!, 'uDisplayMode'), DISPLAY_MODE_CODE[displayMode]);
+    gl.uniform1i(this.uniform(this.progScene!, 'uRealisticTextures'), settings.realisticTextures ? 1 : 0);
+    gl.uniform1i(this.uniform(this.progScene!, 'uRefractionSpec'), settings.refractionAndSpec ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     // --- STAGE 3: Separable Multi-Pass HDR Gaussian Bloom ---
@@ -376,18 +388,18 @@ export class GpuPipeline {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboBloomA!.fbo);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, bp === 0 ? this.fboScene!.tex : this.fboBloomB!.tex);
-        gl.uniform1i(gl.getUniformLocation(this.progBloom!, 'uTex'), 0);
-        gl.uniform2f(gl.getUniformLocation(this.progBloom!, 'uDir'), 1 / this.fboBloomA!.w, 0);
-        gl.uniform1i(gl.getUniformLocation(this.progBloom!, 'uExtractPass'), bp === 0 ? 1 : 0);
+        gl.uniform1i(this.uniform(this.progBloom!, 'uTex'), 0);
+        gl.uniform2f(this.uniform(this.progBloom!, 'uDir'), 1 / this.fboBloomA!.w, 0);
+        gl.uniform1i(this.uniform(this.progBloom!, 'uExtractPass'), bp === 0 ? 1 : 0);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
 
         // Vertical blur
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboBloomB!.fbo);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.fboBloomA!.tex);
-        gl.uniform1i(gl.getUniformLocation(this.progBloom!, 'uTex'), 0);
-        gl.uniform2f(gl.getUniformLocation(this.progBloom!, 'uDir'), 0, 1 / this.fboBloomA!.h);
-        gl.uniform1i(gl.getUniformLocation(this.progBloom!, 'uExtractPass'), 0);
+        gl.uniform1i(this.uniform(this.progBloom!, 'uTex'), 0);
+        gl.uniform2f(this.uniform(this.progBloom!, 'uDir'), 0, 1 / this.fboBloomA!.h);
+        gl.uniform1i(this.uniform(this.progBloom!, 'uExtractPass'), 0);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       }
     }
@@ -399,23 +411,23 @@ export class GpuPipeline {
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.fboScene!.tex);
-    gl.uniform1i(gl.getUniformLocation(this.progComposite!, 'uSceneTex'), 0);
+    gl.uniform1i(this.uniform(this.progComposite!, 'uSceneTex'), 0);
 
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.fboBloomB!.tex);
-    gl.uniform1i(gl.getUniformLocation(this.progComposite!, 'uBloomTex'), 1);
+    gl.uniform1i(this.uniform(this.progComposite!, 'uBloomTex'), 1);
 
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, radRead.tex);
-    gl.uniform1i(gl.getUniformLocation(this.progComposite!, 'uRadianceTex'), 2);
+    gl.uniform1i(this.uniform(this.progComposite!, 'uRadianceTex'), 2);
 
     gl.uniform1f(
-      gl.getUniformLocation(this.progComposite!, 'uBloomIntensity'),
+      this.uniform(this.progComposite!, 'uBloomIntensity'),
       settings.hdrBloom && displayMode === 'realistic' ? settings.bloomIntensity : 0.15
     );
-    gl.uniform1f(gl.getUniformLocation(this.progComposite!, 'uTime'), world.timeSec);
+    gl.uniform1f(this.uniform(this.progComposite!, 'uTime'), world.timeSec);
     gl.uniform1i(
-      gl.getUniformLocation(this.progComposite!, 'uHeatShimmer'),
+      this.uniform(this.progComposite!, 'uHeatShimmer'),
       settings.heatShimmer && displayMode === 'realistic' ? 1 : 0
     );
 

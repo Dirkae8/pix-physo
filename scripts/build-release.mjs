@@ -89,21 +89,12 @@ async function main() {
   // Windows 1-click native-window launcher (.bat — pure ASCII so any Windows locale executes cleanly!)
   const winBat = [
     '@echo off',
-    'setlocal',
-    'set "APP_HTML=%~dp0PIXPHYSO.html"',
-    'if exist "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe" (',
-    '  start "" "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe" --app="file:///%APP_HTML:\\=/%" --window-size=1480,900',
-    '  exit /b 0',
+    'if exist "%~dp0PIXPHYSO.exe" (',
+    '  start "" "%~dp0PIXPHYSO.exe"',
+    ') else (',
+    '  echo PIXPHYSO.exe not found. Please use the full native release archive.',
+    '  pause',
     ')',
-    'if exist "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe" (',
-    '  start "" "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe" --app="file:///%APP_HTML:\\=/%" --window-size=1480,900',
-    '  exit /b 0',
-    ')',
-    'if exist "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" (',
-    '  start "" "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" --app="file:///%APP_HTML:\\=/%" --window-size=1480,900',
-    '  exit /b 0',
-    ')',
-    'start "" "%APP_HTML%"',
   ].join('\r\n');
   fs.writeFileSync(path.join(releaseDir, 'START_PIXPHYSO.bat'), winBat, 'utf8');
 
@@ -132,8 +123,8 @@ async function main() {
     'КАК ЗАПУСТИТЬ (БЕЗ УСТАНОВКИ, БЕЗ СЕРВЕРА, БЕЗ ИНТЕРНЕТА):',
     '',
     'Вариант 1 (Windows): запустите PIXPHYSO.exe или START_PIXPHYSO.bat',
-    '  Для запуска требуется Microsoft Edge или другой современный браузер.',
-    '  Игра сразу откроется в отдельном окне с аппаратным 3D/WebGL2 ускорением видеокарты!',
+    '  Требуется установленный Microsoft Edge WebView2 Runtime.',
+    '  Игра открывается как отдельное приложение со встроенным WebView2.',
     '',
     'Вариант 2 (Android): установите PIXPHYSO.apk, если он добавлен в архив.',
     '  Android 6+, актуальный системный WebView с поддержкой WebGL2.',

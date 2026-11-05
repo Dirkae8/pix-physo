@@ -134,6 +134,7 @@ export const MAT = {
   TOOL_MIXER: 114,
   TOOL_CRYO: 115,
   TOOL_IGNITE: 116,
+  ETHANOL_VAPOR: 117,
 } as const;
 
 export const MAX_MAT_ID = 128;
@@ -1125,7 +1126,7 @@ const RAW_MATERIALS: MaterialDef[] = [
     specificHeat: 2.44,
     thermalCond: 0.11,
     boilTempC: 78.4,
-    boilInto: MAT.FUEL_VAPOR,
+    boilInto: MAT.ETHANOL_VAPOR,
     freezeTempC: -114,
     freezeInto: MAT.ICE,
     flammability: 0.78,
@@ -2530,6 +2531,12 @@ const RAW_MATERIALS: MaterialDef[] = [
     textureStyle: 'liquid_oil',
   },
 ];
+
+// Ethanol vapor must not inherit gasoline-vapor detonations or condense into gasoline.
+RAW_MATERIALS.push({ ...RAW_MATERIALS.find(m => m.id === MAT.FUEL_VAPOR)!,
+  id: MAT.ETHANOL_VAPOR, key: 'ethanol_vapor', name: 'Пары спирта', selectable: false,
+  density: 1.59, freezeTempC: 60, freezeInto: MAT.ETHANOL, explosivePower: undefined,
+  ignitionTempC: 120, baseColor: [185, 210, 230], accentColor: [225, 240, 250] });
 
 // Дополнительные вещества используют общие модели фаз; данные реакции являются приближением.
 RAW_MATERIALS.push(

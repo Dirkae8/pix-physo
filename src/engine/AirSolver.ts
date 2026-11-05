@@ -5,11 +5,15 @@ export class AirSolver {
   private nextP: Float32Array;
   private nextVx: Float32Array;
   private nextVy: Float32Array;
+  private fanDirs: Uint8Array;
+  private fanBoosts: Float32Array;
 
   constructor(airSize: number) {
     this.nextP = new Float32Array(airSize);
     this.nextVx = new Float32Array(airSize);
     this.nextVy = new Float32Array(airSize);
+    this.fanDirs = new Uint8Array(airSize);
+    this.fanBoosts = new Float32Array(airSize);
   }
 
   public ensureSize(airSize: number): void {
@@ -17,6 +21,8 @@ export class AirSolver {
       this.nextP = new Float32Array(airSize);
       this.nextVx = new Float32Array(airSize);
       this.nextVy = new Float32Array(airSize);
+      this.fanDirs = new Uint8Array(airSize);
+      this.fanBoosts = new Float32Array(airSize);
     }
   }
 
@@ -40,6 +46,7 @@ export class AirSolver {
     const ambT = world.env.ambientTempC;
     const gravSign = Math.sign(world.env.gravity) || 1;
     let fanCount = 0;
+    this.fanDirs.fill(0);
 
     for (let ay = 0; ay < ah; ay++) {
       const cy0 = ay << 2;
@@ -76,7 +83,9 @@ export class AirSolver {
           }
         }
 
-        const isBlocked = !fanHere && solidCount >= 10 ? 1 : 0;
+        // A single solid pixel can form a sealed wall. Conservatively rasterize it
+        // into the coarse air grid instead of letting thin walls disappear.
+        const isBlocked = !fanHere && solidCount > 0 ? 1 : 0;
         wall[ai] = isBlocked;
 
         if (isBlocked) {
@@ -96,39 +105,36 @@ export class AirSolver {
           }
         }
 
-        // Active Fan / Turbine propulsion: creates directional jet + suction behind!
         if (fanHere) {
+          this.fanDirs[ai] = fanDir + 1;
+          this.fanBoosts[ai] = fanBoost;
           fanCount++;
-          const jetSpeed = 16.5 * fanBoost;
-          const dirX = fanDir === 0 ? 1 : fanDir === 2 ? -1 : 0;
-          const dirY = fanDir === 1 ? 1 : fanDir === 3 ? -1 : 0;
-          vx[ai] = vx[ai] * 0.4 + dirX * jetSpeed * 0.6;
-          vy[ai] = vy[ai] * 0.4 + dirY * jetSpeed * 0.6;
-
-          const frontX = ax + dirX;
-          const frontY = ay + dirY;
-          if (frontX >= 0 && frontX < aw && frontY >= 0 && frontY < ah) {
-            const fi = frontY * aw + frontX;
-            if (!wall[fi]) {
-              p[fi] += 4.2 * fanBoost;
-              vx[fi] += dirX * 4.5 * fanBoost;
-              vy[fi] += dirY * 4.5 * fanBoost;
-            }
-          }
-          const backX = ax - dirX;
-          const backY = ay - dirY;
-          if (backX >= 0 && backX < aw && backY >= 0 && backY < ah) {
-            const bi = backY * aw + backX;
-            if (!wall[bi]) {
-              p[bi] -= 3.2 * fanBoost;
-              vx[bi] += dirX * 2.5 * fanBoost;
-              vy[bi] += dirY * 2.5 * fanBoost;
-            }
-          }
         }
       }
     }
     world.events.fanActiveCount = fanCount;
+
+    // Inject fans only after the complete obstacle mask has been rebuilt.
+    // Reading the previous frame's mask here caused jets to pass through new walls.
+    for (let ay = 0; ay < ah; ay++) for (let ax = 0; ax < aw; ax++) {
+      const ai = ay * aw + ax, dir = this.fanDirs[ai] - 1;
+      if (dir < 0 || wall[ai]) continue;
+      const dx = dir === 0 ? 1 : dir === 2 ? -1 : 0;
+      const dy = dir === 1 ? 1 : dir === 3 ? -1 : 0;
+      const boost = this.fanBoosts[ai];
+      const fx = ax + dx, fy = ay + dy, bx = ax - dx, by = ay - dy;
+      const frontOpen = fx >= 0 && fx < aw && fy >= 0 && fy < ah && !wall[fy * aw + fx];
+      if (!frontOpen) continue;
+      vx[ai] = vx[ai] * .4 + dx * 16.5 * boost * .6;
+      vy[ai] = vy[ai] * .4 + dy * 16.5 * boost * .6;
+      const fi = fy * aw + fx;
+      p[fi] += 4.2 * boost; vx[fi] += dx * 4.5 * boost; vy[fi] += dy * 4.5 * boost;
+      if (bx >= 0 && bx < aw && by >= 0 && by < ah && !wall[by * aw + bx]) {
+        const bi = by * aw + bx;
+        p[bi] -= 3.2 * boost; vx[bi] += dx * 2.5 * boost; vy[bi] += dy * 2.5 * boost;
+      }
+    }
+
 
     // 2. Ambient Wind Vector forcing (0..360 deg + optional atmospheric gusts)
     const windSpd = world.env.windSpeed;
@@ -218,12 +224,17 @@ export class AirSolver {
           nvx = (nvx * 0.84 + vxAvg * 0.16) * 0.985;
           nvy = (nvy * 0.84 + vyAvg * 0.16) * 0.985;
 
-          if (hasWind) {
-            const isEdge = ax <= 1 || ax >= aw - 2 || ay <= 1;
-            const blend = isEdge ? 0.18 : 0.022;
-            nvx += (targetWx - nvx) * blend;
-            nvy += (targetWy - nvy) * blend;
+          // Ambient wind enters only at open boundaries, never throughout a sealed room.
+          const openEdge = world.env.boundary === 'open_all'
+            ? ax === 0 || ax === aw - 1 || ay === 0 || ay === ah - 1
+            : world.env.boundary === 'open_sky' && ay === 0;
+          if (hasWind && openEdge) {
+            nvx += (targetWx - nvx) * 0.18;
+            nvy += (targetWy - nvy) * 0.18;
           }
+          // Impermeable no-through-flow boundary; tangential flow remains free.
+          if ((nvx > 0 && ax + 1 < aw && wall[i + 1]) || (nvx < 0 && ax > 0 && wall[i - 1])) nvx = 0;
+          if ((nvy > 0 && ay + 1 < ah && wall[i + aw]) || (nvy < 0 && ay > 0 && wall[i - aw])) nvy = 0;
 
           this.nextVx[i] = Math.max(-55, Math.min(55, nvx));
           this.nextVy[i] = Math.max(-55, Math.min(55, nvy));

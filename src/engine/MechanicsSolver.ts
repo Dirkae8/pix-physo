@@ -66,12 +66,9 @@ export class MechanicsSolver {
       for (let rawX = 0; rawX < w; rawX++) {
         const x = flipX ? w - 1 - rawX : rawX;
         const i = y * w + x;
-        if (stamp[i] === tick) continue;
-
         const m = mat[i];
-        if (m === MAT.EMPTY) continue;
-
         const st = STATE_LUT[m];
+        if ((st !== 2 && st !== 3) || stamp[i] === tick) continue;
         if (st === 2) {
           this.stepPowder(world, x, y, i, m, downDir, hasGravity, tick);
         } else if (st === 3) {
@@ -85,12 +82,9 @@ export class MechanicsSolver {
       for (let rawX = 0; rawX < w; rawX++) {
         const x = flipX ? w - 1 - rawX : rawX;
         const i = y * w + x;
-        if (stamp[i] === tick) continue;
-
         const m = mat[i];
-        if (m === MAT.EMPTY) continue;
-
         const st = STATE_LUT[m];
+        if ((st !== 4 && st !== 5) || stamp[i] === tick) continue;
         if (st === 4 || st === 5) {
           this.stepGasOrEnergy(world, x, y, i, m, tick);
         }
@@ -113,7 +107,7 @@ export class MechanicsSolver {
       if (vis[startIdx]) continue;
       const m = mat[startIdx];
       if (STATE_LUT[m] !== 3) {
-        world.stress[startIdx] *= 0.88;
+        if (world.stress[startIdx] !== 0) world.stress[startIdx] *= 0.88;
         continue;
       }
 
@@ -580,6 +574,8 @@ export class MechanicsSolver {
       const nx = c === 2 ? x : x + dx;
       const ny = c === 1 ? y : y + dy;
       if (!world.inBounds(nx, ny)) continue;
+      // Do not move a gas diagonally through a sealed corner of two solids.
+      if (nx !== x && ny !== y && STATE_LUT[world.mat[y * w + nx]] === 1 && STATE_LUT[world.mat[ny * w + x]] === 1) continue;
       const ni = ny * w + nx;
       const nm = world.mat[ni];
       if (nm === MAT.EMPTY) {

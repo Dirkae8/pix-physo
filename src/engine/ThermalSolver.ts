@@ -1,18 +1,29 @@
 import {
   MAT,
+  MAX_MAT_ID,
   MATERIAL_BY_ID,
   SPECIFIC_HEAT_LUT,
   THERMAL_COND_LUT,
 } from '../materials/registry';
 import { World } from './World';
 
+// Symmetric interface conductivity depends only on material IDs, not on the frame.
+const INTERFACE_COND = new Float32Array(MAX_MAT_ID * MAX_MAT_ID);
+for (let a = 0; a < MAX_MAT_ID; a++) for (let b = 0; b < MAX_MAT_ID; b++) {
+  const ka = THERMAL_COND_LUT[a], kb = THERMAL_COND_LUT[b];
+  INTERFACE_COND[a * MAX_MAT_ID + b] = 2 * ka * kb / (ka + kb + 0.0001);
+}
+
+
 export class ThermalSolver {
   private nextTemp: Float32Array;
   private ambBoilLut: Float32Array;
+  private lastBoilPressure = NaN;
+  private steamCondenseBase = 0;
 
   constructor(size: number) {
     this.nextTemp = new Float32Array(size);
-    this.ambBoilLut = new Float32Array(80);
+    this.ambBoilLut = new Float32Array(MAX_MAT_ID);
   }
 
   public ensureSize(size: number): void {
@@ -79,41 +90,48 @@ export class ThermalSolver {
           continue;
         }
 
-        const kC = THERMAL_COND_LUT[m];
+        const kOffset = m * MAX_MAT_ID;
         const cp = SPECIFIC_HEAT_LUT[m] || 1.0;
         let flux = 0;
+        let conductance = 0;
         let maxDeltaNeighbor = 0;
 
         if (x > 0) {
           const j = i - 1;
-          const kN = THERMAL_COND_LUT[mat[j]];
+          const kN = INTERFACE_COND[kOffset + mat[j]];
+          conductance += kN;
           const dT = temp[j] - t;
-          flux += ((2 * kC * kN) / (kC + kN + 0.0001)) * dT;
+          flux += kN * dT;
           if (-dT > maxDeltaNeighbor) maxDeltaNeighbor = -dT;
         }
         if (x + 1 < w) {
           const j = i + 1;
-          const kN = THERMAL_COND_LUT[mat[j]];
+          const kN = INTERFACE_COND[kOffset + mat[j]];
+          conductance += kN;
           const dT = temp[j] - t;
-          flux += ((2 * kC * kN) / (kC + kN + 0.0001)) * dT;
+          flux += kN * dT;
           if (-dT > maxDeltaNeighbor) maxDeltaNeighbor = -dT;
         }
         if (hasUp) {
           const j = i - w;
-          const kN = THERMAL_COND_LUT[mat[j]];
+          const kN = INTERFACE_COND[kOffset + mat[j]];
+          conductance += kN;
           const dT = temp[j] - t;
-          flux += ((2 * kC * kN) / (kC + kN + 0.0001)) * dT;
+          flux += kN * dT;
           if (-dT > maxDeltaNeighbor) maxDeltaNeighbor = -dT;
         }
         if (hasDown) {
           const j = i + w;
-          const kN = THERMAL_COND_LUT[mat[j]];
+          const kN = INTERFACE_COND[kOffset + mat[j]];
+          conductance += kN;
           const dT = temp[j] - t;
-          flux += ((2 * kC * kN) / (kC + kN + 0.0001)) * dT;
+          flux += kN * dT;
           if (-dT > maxDeltaNeighbor) maxDeltaNeighbor = -dT;
         }
 
-        t += (flux * 0.42) / cp;
+        // Bound the explicit Fourier step: no cell can overshoot its neighbours.
+        // The previous fixed coefficient became unstable for highly conductive metals.
+        t += flux * Math.min(0.42 / cp, 0.24 / (conductance + 0.0001));
 
         if (t > 600) {
           t -= (t - ambT) * 0.0018;
@@ -136,12 +154,16 @@ export class ThermalSolver {
 
     temp.set(out);
 
-    for (let id = 1; id < 80; id++) {
-      const d = MATERIAL_BY_ID[id];
-      this.ambBoilLut[id] =
-        d.boilTempC !== undefined ? ThermalSolver.boilingPointAtPressure(d.boilTempC, basePKPa) : 99999;
+    if (basePKPa !== this.lastBoilPressure) {
+      for (let id = 1; id < MAX_MAT_ID; id++) {
+        const d = MATERIAL_BY_ID[id];
+        this.ambBoilLut[id] =
+          d.boilTempC !== undefined ? ThermalSolver.boilingPointAtPressure(d.boilTempC, basePKPa) : 99999;
+      }
+      this.steamCondenseBase = ThermalSolver.boilingPointAtPressure(100, basePKPa) - 6;
+      this.lastBoilPressure = basePKPa;
     }
-    const steamCondenseBase = ThermalSolver.boilingPointAtPressure(100, basePKPa) - 6;
+    const steamCondenseBase = this.steamCondenseBase;
 
     for (let y = 0; y < h; y++) {
       const row = y * w;

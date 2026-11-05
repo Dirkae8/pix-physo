@@ -186,7 +186,7 @@ export class ChemistrySolver {
           if (hasOxidizer && (t >= def.ignitionTempC || (nearFlame && t >= def.ignitionTempC * 0.45))) {
             const prob = def.flammability * (nearPureO2 ? 2.8 : nearFlame ? 1.0 : 0.35);
             if (world.rand() < prob) {
-              if (def.explosivePower && def.explosivePower >= 0.6) {
+              if (def.state !== 'gas' && def.explosivePower && def.explosivePower >= 0.6) {
                 const pwr = def.explosivePower * (nearPureO2 ? 1.45 : 1.0);
                 mat[i] = MAT.FIRE;
                 world.addImpulseExplosion(x, y, Math.max(6, Math.round(13 * pwr)), pwr, 2400);
