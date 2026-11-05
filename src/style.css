@@ -779,3 +779,12 @@ input, button, select, textarea { font-family: inherit; }
   .brand-logo { display: block; width: 26px; height: 26px; }
   .brand-title, .compute-badge { display: none; }
 }
+/* Collapsible catalog leaves the workspace available for inspection. */
+.app-shell.catalog-collapsed { grid-template-rows: 50px minmax(0, 1fr) 0; }
+.catalog-collapsed .bottom-dock { display: none; }
+@media (max-width: 760px), (pointer: coarse) and (max-height: 600px) {
+  .app-shell.catalog-collapsed { grid-template-rows: 48px minmax(0, 1fr) 0; }
+}
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 600px) {
+  .app-shell.catalog-collapsed { grid-template-columns: minmax(0,1fr) 0; grid-template-rows: 44px minmax(0,1fr); }
+}

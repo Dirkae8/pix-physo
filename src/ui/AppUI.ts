@@ -1,6 +1,9 @@
 import { SoundEngine } from '../audio/SoundEngine';
 import { DEMO_SCENES } from '../engine/Demos';
 import { SimulationEngine } from '../engine/SimulationEngine';
+import { makeWire } from '../engine/Wires';
+import { deleteWorld, listWorlds, loadWorld, saveWorld } from '../engine/WorldStore';
+import { ELEC_COND_LUT } from '../materials/registry';
 import { ThermalSolver } from '../engine/ThermalSolver';
 import { GpuPipeline } from '../gpu/GpuPipeline';
 import {
@@ -74,6 +77,14 @@ export class AppUI {
   private canvasFrame!: HTMLElement;
 
   // Pointer state
+  private zoom = 1;
+  private panX = 0;
+  private panY = 0;
+  private editMode: 'paint' | 'fill' | 'pick' | 'ruler' | 'rectangle' | 'ellipse' = 'paint';
+  private measureStart: [number, number] | null = null;
+  private wireMode = false;
+  private wireStart: [number, number] | null = null;
+  private wireTension = .5;
   private pointerDown = false;
   private pointerErase = false;
   private pointerInteractedSwitch = false;
@@ -150,6 +161,8 @@ export class AppUI {
                 : ''
             }
             <button class="btn mobile-env" id="btnEnv">Среда</button>
+            <button class="btn" id="btnWorlds">Миры</button>
+            <button class="btn" id="btnCatalog">Каталог</button>
             <button class="btn btn-danger" id="btnClear">Очистить</button>
             <button class="btn" id="btnSettings">⚙ Настройки</button>
             <button class="btn" id="btnExit">Выход</button>
@@ -236,6 +249,13 @@ export class AppUI {
               </div>
             </div>
 
+            <div class="panel-section">
+              <div class="section-title">Погода</div>
+              <label class="toggle-row"><span>Осадки: дождь / снег по температуре</span><input type="checkbox" id="chkPrecipitation" /></label>
+              <label class="toggle-row"><span>Гроза (при осадках)</span><input type="checkbox" id="chkStorm" /></label>
+              <div class="sub-hint">Осадки появляются при открытом небе.</div>
+            </div>
+
             <!-- DISPLAY FILTER & BOUNDARIES -->
             <div class="panel-section">
               <div class="section-title">Отображение и края</div>
@@ -296,6 +316,16 @@ export class AppUI {
         <section class="bottom-dock">
           <div class="items-column">
             <div class="brush-toolbar">
+              <button class="mini-btn active" data-edit="paint">Кисть</button>
+              <button class="mini-btn" data-edit="fill">Заливка</button>
+              <button class="mini-btn" data-edit="pick">Пипетка</button>
+              <button class="mini-btn" data-edit="ruler">Линейка</button>
+              <button class="mini-btn" data-edit="rectangle">Прямоугольник</button>
+              <button class="mini-btn" data-edit="ellipse">Эллипс</button>
+              <button class="mini-btn" id="btnZoomReset">Масштаб 1×</button>
+              <button class="mini-btn" id="btnWire" title="Две точки на проводниках">Кабель</button>
+              <label class="brush-inline" title="Натяжение нового кабеля">Натяжение <input id="rngWire" type="range" min="0" max="100" value="50" style="width:70px" /></label>
+              <button class="mini-btn" id="btnClearWires" title="Удалить все кабели">× кабели</button>
               <input
                 type="text"
                 class="search-input"
@@ -337,6 +367,16 @@ export class AppUI {
 
           <div class="category-corner" id="categoryCorner"></div>
         </section>
+      </div>
+
+      <div class="modal-backdrop hidden" id="worldsModal">
+        <div class="modal-window" style="max-width:520px">
+          <div class="modal-header"><div class="modal-title">Миры и схемы</div><button class="btn" id="btnCloseWorlds">✕ Закрыть</button></div>
+          <div class="sub-hint">Сохранения хранятся локально в данных приложения. Схема сохраняется вместе со всем миром.</div>
+          <div style="display:flex;gap:6px;margin:12px 0"><input id="worldName" maxlength="60" placeholder="Имя сохранения" style="flex:1;min-width:0" /><button class="btn" id="btnSaveWorld">Сохранить</button></div>
+          <div id="worldMessage" class="sub-hint"></div><div id="worldList" style="display:flex;flex-direction:column;gap:6px;max-height:45vh;overflow:auto"></div>
+          <div class="sub-hint" style="margin-top:12px">Кратко: выбери материал и рисуй. Среда управляет температурой и ветром. Кабель: нажми на два проводника.</div>
+        </div>
       </div>
 
       <!-- GAME SETTINGS MODAL -->
@@ -652,6 +692,8 @@ export class AppUI {
     this.root.querySelector('#valWindAngle')!.textContent = this.windDirectionName(env.windAngleDeg);
 
     (this.root.querySelector('#chkWindGusts') as HTMLInputElement).checked = env.windGusts;
+    (this.root.querySelector('#chkPrecipitation') as HTMLInputElement).checked = env.precipitation;
+    (this.root.querySelector('#chkStorm') as HTMLInputElement).checked = env.storm;
     (this.root.querySelector('#selBoundary') as HTMLSelectElement).value = env.boundary;
 
     this.windCompass.setValues(env.windAngleDeg, env.windSpeed);
@@ -700,6 +742,52 @@ export class AppUI {
 
     this.root.querySelector('#btnClear')!.addEventListener('click', () => {
       this.engine.world.clear();
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-edit]').forEach(button => button.addEventListener('click', () => {
+      this.editMode = button.dataset.edit as typeof this.editMode; this.measureStart = null; this.wireMode = false; this.wireStart = null;
+      this.root.querySelector('#btnWire')!.classList.remove('active');
+      this.root.querySelectorAll('[data-edit]').forEach(b => b.classList.remove('active')); button.classList.add('active');
+    }));
+    this.root.querySelector('#btnCatalog')!.addEventListener('click', () => { this.root.querySelector('.app-shell')!.classList.toggle('catalog-collapsed'); requestAnimationFrame(() => this.fitCanvasViewport()); });
+    this.root.querySelector('#btnZoomReset')!.addEventListener('click', () => { this.zoom = 1; this.panX = this.panY = 0; this.applyCamera(); });
+    this.root.querySelector('#btnWire')!.addEventListener('click', () => {
+      this.wireMode = !this.wireMode; this.wireStart = null;
+      if (this.wireMode) { this.editMode = 'paint'; this.root.querySelectorAll('[data-edit]').forEach(b => b.classList.remove('active')); }
+      this.root.querySelector('#btnWire')!.classList.toggle('active', this.wireMode);
+      this.probeEl.textContent = this.wireMode ? 'Кабель: выберите две точки на проводниках' : '';
+    });
+    this.root.querySelector('#rngWire')!.addEventListener('input', e => { this.wireTension = Number((e.target as HTMLInputElement).value) / 100; });
+    this.root.querySelector('#btnClearWires')!.addEventListener('click', () => { this.engine.world.pushUndo(); this.engine.world.wires = []; this.wireStart = null; });
+    for (const [id, key] of [['chkPrecipitation','precipitation'], ['chkStorm','storm']] as const) {
+      this.root.querySelector('#' + id)!.addEventListener('change', e => { this.engine.world.env[key] = (e.target as HTMLInputElement).checked; this.markCustomPreset(); });
+    }
+    const modal = this.root.querySelector('#worldsModal') as HTMLElement;
+    const message = this.root.querySelector('#worldMessage') as HTMLElement;
+    const list = this.root.querySelector('#worldList') as HTMLElement;
+    const refresh = async () => {
+      list.replaceChildren();
+      try {
+        const saves = await listWorlds(); message.textContent = saves.length ? '' : 'Сохранений пока нет.';
+        for (const save of saves) {
+          const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:6px';
+          const label = document.createElement('span'); label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis'; label.textContent = save.name;
+          label.title = new Date(save.date).toLocaleString();
+          const load = document.createElement('button'); load.className = 'btn'; load.textContent = 'Загрузить';
+          load.onclick = async () => { try { await loadWorld(this.engine.world, save.name); this.fitCanvasViewport(); this.syncEnvironmentUI(); modal.classList.add('hidden'); } catch (e) { message.textContent = 'Ошибка загрузки: ' + String(e); } };
+          const del = document.createElement('button'); del.className = 'btn'; del.textContent = '×'; del.title = 'Удалить сохранение';
+          del.onclick = async () => { if (!window.confirm('Удалить сохранение «' + save.name + '»?')) return; try { await deleteWorld(save.name); await refresh(); } catch (e) { message.textContent = 'Ошибка удаления: ' + String(e); } };
+          row.append(label, load, del); list.appendChild(row);
+        }
+      } catch (e) { message.textContent = 'Хранилище недоступно: ' + String(e); }
+    };
+    this.root.querySelector('#btnWorlds')!.addEventListener('click', () => { modal.classList.remove('hidden'); void refresh(); });
+    this.root.querySelector('#btnCloseWorlds')!.addEventListener('click', () => modal.classList.add('hidden'));
+    this.root.querySelector('#btnSaveWorld')!.addEventListener('click', async () => {
+      const name = (this.root.querySelector('#worldName') as HTMLInputElement).value.trim();
+      if (!name) { message.textContent = 'Введите имя сохранения.'; return; }
+      try { const existing = await listWorlds(); if (existing.some(s => s.name === name) && !window.confirm('Перезаписать «' + name + '»?')) return; await saveWorld(this.engine.world, name); await refresh(); message.textContent = 'Сохранено.'; }
+      catch (e) { message.textContent = 'Ошибка сохранения: ' + String(e); }
     });
 
     // Environment Presets & Sliders
@@ -951,6 +1039,10 @@ export class AppUI {
     return [sx, sy];
   }
 
+  private applyCamera(): void {
+    this.canvasFrame.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
+  }
+
   private bindCanvasInput(): void {
     this.root.querySelector('#btnEnv')!.addEventListener('click', () => { this.root.querySelector('.env-sidebar')!.classList.toggle('mobile-open'); });
     this.root.querySelector('#btnCloseEnv')!.addEventListener('click', () => { this.root.querySelector('.env-sidebar')!.classList.remove('mobile-open'); });
@@ -968,7 +1060,7 @@ export class AppUI {
       { passive: false }
     );
 
-    this.canvasFrame.addEventListener('pointerdown', (e) => {
+    const startPointer = (e: PointerEvent) => {
       const [sx, sy] = this.eventToSimCoords(e);
       this.pointerSimX = sx;
       this.pointerSimY = sy;
@@ -977,8 +1069,49 @@ export class AppUI {
       this.pointerDown = true;
       this.pointerErase = e.button === 2;
       this.pointerInteractedSwitch = false;
-      this.canvasFrame.setPointerCapture(e.pointerId);
+      if (e.pointerType !== 'touch') this.canvasFrame.setPointerCapture(e.pointerId);
 
+      if (this.wireMode && !this.pointerErase) {
+        this.pointerInteractedSwitch = true;
+        if (ELEC_COND_LUT[this.engine.world.mat[sy * this.engine.world.width + sx]] <= 0) { this.probeEl.textContent = 'Точка кабеля должна быть на проводнике.'; return; }
+        if (!this.wireStart) { this.wireStart = [sx, sy]; this.probeEl.textContent = 'Выберите вторую точку кабеля.'; }
+        else { const [ax, ay] = this.wireStart; if (ax !== sx || ay !== sy) { this.engine.world.pushUndo(); this.engine.world.wires.push(makeWire(ax, ay, sx, sy, this.wireTension)); } this.wireStart = null; }
+        return;
+      }
+      if (!this.pointerErase && this.editMode !== 'paint') {
+        const world = this.engine.world;
+        if (this.editMode === 'pick') {
+          const id = world.mat[sy * world.width + sx];
+          if (SELECTABLE_MATERIALS.some(m => m.id === id)) this.selectMaterial(id);
+          this.pointerInteractedSwitch = true; return;
+        }
+        if (this.editMode === 'ruler') {
+          if (!this.measureStart) this.measureStart = [sx, sy];
+          else {
+            const [x,y] = this.measureStart, length = Math.hypot(sx-x, sy-y).toFixed(1);
+            (this.root.querySelector('[data-edit="ruler"]') as HTMLElement).textContent = `Линейка: ${length} кл.`;
+            this.measureStart = null;
+          }
+          this.pointerInteractedSwitch = true; return;
+        }
+        if (this.editMode === 'fill') {
+          this.pointerInteractedSwitch = true;
+          if (MATERIAL_BY_ID[this.selectedMatId].state === 'tool') return;
+          const target = world.mat[sy * world.width + sx];
+          if (target === this.selectedMatId) return;
+          world.pushUndo();
+          const queue = new Int32Array(world.size), seen = new Uint8Array(world.size);
+          let head = 0, tail = 0, start = sy * world.width + sx; queue[tail++] = start; seen[start] = 1;
+          while (head < tail) {
+            const i = queue[head++], x = i % world.width, y = (i / world.width) | 0;
+            world.setCell(x, y, this.selectedMatId);
+            const add = (j: number) => { if (!seen[j] && world.mat[j] === target) { seen[j] = 1; queue[tail++] = j; } };
+            if (x > 0) add(i-1); if (x+1 < world.width) add(i+1); if (y > 0) add(i-world.width); if (y+1 < world.height) add(i+world.width);
+          }
+          return;
+        }
+        this.lineStartX = sx; this.lineStartY = sy; world.pushUndo(); return;
+      }
       if (!this.pointerErase && this.selectedMatId === MAT.TOOL_SENSOR) {
         const pins = this.engine.world.sensors;
         const existing = pins.findIndex(p => Math.hypot(p.x - sx, p.y - sy) < 4);
@@ -1025,14 +1158,15 @@ export class AppUI {
         this.replaceMode,
         this.pointerErase
       );
-    });
+    };
 
-    this.canvasFrame.addEventListener('pointermove', (e) => {
+    const movePointer = (e: PointerEvent) => {
       const [sx, sy] = this.eventToSimCoords(e);
       this.pointerSimX = sx;
       this.pointerSimY = sy;
 
       if (!this.pointerDown || this.pointerInteractedSwitch) return;
+      if (this.editMode === 'rectangle' || this.editMode === 'ellipse') return;
 
       if (!this.pointerErase && this.selectedMatId === MAT.TOOL_HAND) {
         this.engine.moveHandGrab(sx, sy);
@@ -1056,13 +1190,22 @@ export class AppUI {
       );
       this.prevSimX = sx;
       this.prevSimY = sy;
-    });
+    };
 
     const finishPointer = () => {
       if (!this.pointerDown) return;
+      if (!this.pointerErase && !this.pointerInteractedSwitch && (this.editMode === 'rectangle' || this.editMode === 'ellipse') && this.lineStartX >= 0 && MATERIAL_BY_ID[this.selectedMatId].state !== 'tool') {
+        const world = this.engine.world, x0 = Math.min(this.lineStartX, this.pointerSimX), x1 = Math.max(this.lineStartX, this.pointerSimX), y0 = Math.min(this.lineStartY, this.pointerSimY), y1 = Math.max(this.lineStartY, this.pointerSimY);
+        const cx = (x0+x1)/2, cy = (y0+y1)/2, rx = Math.max(.5,(x1-x0+1)/2), ry = Math.max(.5,(y1-y0+1)/2);
+        for (let y=y0; y<=y1; y++) for (let x=x0; x<=x1; x++) {
+          if (this.editMode === 'ellipse' && ((x-cx)/rx)**2 + ((y-cy)/ry)**2 > 1) continue;
+          if (this.replaceMode || world.mat[y*world.width+x] === MAT.EMPTY) world.setCell(x,y,this.selectedMatId);
+        }
+      }
       if (
         !this.pointerErase &&
         !this.pointerInteractedSwitch &&
+        this.editMode === 'paint' &&
         (this.brushShape === 'line' || this.shiftHeld) &&
         this.lineStartX >= 0
       ) {
@@ -1087,8 +1230,50 @@ export class AppUI {
       this.lineStartY = -1;
     };
 
-    this.canvasFrame.addEventListener('pointerup', finishPointer);
-    this.canvasFrame.addEventListener('pointercancel', finishPointer);
+    // Single-touch strokes are committed on release. This prevents the first
+    // finger of a pinch/pan from leaving an accidental mark before the second arrives.
+    const touches = new Map<number, {x: number; y: number}>();
+    let pending: PointerEvent[] = [], gesturing = false;
+    let gestureStart = {distance: 1, x: 0, y: 0, zoom: 1, panX: 0, panY: 0};
+    const pair = () => Array.from(touches.values()).slice(0, 2);
+    this.canvasFrame.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'touch') { startPointer(e); return; }
+      this.canvasFrame.setPointerCapture(e.pointerId);
+      touches.set(e.pointerId, {x: e.clientX, y: e.clientY});
+      if (touches.size === 1 && !gesturing) pending = [e];
+      if (touches.size === 2) {
+        pending = []; gesturing = true;
+        const [a,b] = pair();
+        gestureStart = {distance: Math.max(1, Math.hypot(b.x-a.x,b.y-a.y)), x:(a.x+b.x)/2, y:(a.y+b.y)/2, zoom:this.zoom, panX:this.panX, panY:this.panY};
+      }
+    });
+    this.canvasFrame.addEventListener('pointermove', e => {
+      if (e.pointerType !== 'touch') { movePointer(e); return; }
+      if (!touches.has(e.pointerId)) return;
+      touches.set(e.pointerId, {x:e.clientX, y:e.clientY});
+      if (gesturing && touches.size >= 2) {
+        const [a,b] = pair();
+        this.zoom = Math.max(1, Math.min(5, gestureStart.zoom * Math.hypot(b.x-a.x,b.y-a.y)/gestureStart.distance));
+        const maxX = this.canvasFrame.offsetWidth * this.zoom * .45, maxY = this.canvasFrame.offsetHeight * this.zoom * .45;
+        this.panX = Math.max(-maxX, Math.min(maxX, gestureStart.panX + (a.x+b.x)/2 - gestureStart.x));
+        this.panY = Math.max(-maxY, Math.min(maxY, gestureStart.panY + (a.y+b.y)/2 - gestureStart.y));
+        this.applyCamera();
+      } else if (!gesturing && pending.length < 512) pending.push(e);
+    });
+    const endTouch = (e: PointerEvent, cancelled: boolean) => {
+      if (e.pointerType !== 'touch') { finishPointer(); return; }
+      if (!touches.has(e.pointerId)) return;
+      touches.delete(e.pointerId);
+      if (!gesturing && !cancelled && pending.length) {
+        startPointer(pending[0]);
+        for (let n = 1; n < pending.length; n++) movePointer(pending[n]);
+        movePointer(e); finishPointer();
+      }
+      pending = [];
+      if (touches.size === 0) gesturing = false;
+    };
+    this.canvasFrame.addEventListener('pointerup', e => endTouch(e, false));
+    this.canvasFrame.addEventListener('pointercancel', e => endTouch(e, true));
     this.canvasFrame.addEventListener('pointerleave', () => {
       if (!this.pointerDown) {
         this.pointerSimX = -1;
@@ -1133,6 +1318,14 @@ export class AppUI {
     const world = this.engine.world;
     const scaleX = cw / world.width;
     const scaleY = ch / world.height;
+
+    // Hanging wires are simulated as constrained flexible segments.
+    for (const wire of world.wires) {
+      ctx.beginPath(); ctx.strokeStyle = '#181818'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+      wire.points.forEach((p, i) => i ? ctx.lineTo((p.x + .5) * scaleX, (p.y + .5) * scaleY) : ctx.moveTo((p.x + .5) * scaleX, (p.y + .5) * scaleY));
+      ctx.stroke(); ctx.strokeStyle = '#d8d8d8'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    if (this.wireStart) { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc((this.wireStart[0]+.5)*scaleX, (this.wireStart[1]+.5)*scaleY, 4, 0, Math.PI*2); ctx.fill(); }
 
     // 1. Optional Airflow Velocity Vectors Overlay
     if (this.settings.airVectorsOverlay) {

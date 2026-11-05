@@ -195,7 +195,11 @@ export class ThermalSolver {
 
           if (t > effBoilC) {
             const superheat = t - effBoilC;
-            if (world.rand() < Math.min(0.8, 0.14 + superheat * 0.03)) {
+            // At atmospheric pressure water needs time and latent heat to vaporise.
+            // Low-pressure flashing remains faster because the boiling point is much lower.
+            const waterAtPressure = (m === MAT.WATER || m === MAT.SALTWATER || m === MAT.SEAWATER) && basePKPa >= 20;
+            const boilChance = waterAtPressure ? Math.min(0.12, 0.018 + superheat * 0.003) : Math.min(0.8, 0.14 + superheat * 0.03);
+            if (world.rand() < boilChance) {
               if (m === MAT.SALTWATER && world.rand() < 0.28) {
                 mat[i] = MAT.SALT;
               } else if (m === MAT.SYRUP && world.rand() < 0.32) {
@@ -206,10 +210,11 @@ export class ThermalSolver {
                 world.airPressure[ai] += 0.9;
                 world.events.sizzleCount++;
               }
-              // Cool neighboring liquid slightly while keeping vapor above dew point
+              // Approximate latent heat withdrawn from the liquid below, never below ambient.
               if (y + 1 < h && mat[i + w] === m) {
-                temp[i + w] -= 4;
+                temp[i + w] = Math.max(ambT, temp[i + w] - (waterAtPressure ? Math.min(12, 2 + superheat * 0.3) : 4));
               }
+              if (waterAtPressure) temp[i] = Math.max(effBoilC, temp[i] - Math.min(12, superheat));
               continue;
             }
           } else if (

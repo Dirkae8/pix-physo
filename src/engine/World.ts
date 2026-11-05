@@ -6,6 +6,26 @@ import {
   SensorPin,
 } from '../types/physics';
 import { DENSITY_LUT, MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
+import type { HangingWire } from './Wires';
+
+interface BlastPoint { dx: number; dy: number; dist: number; falloff: number; }
+const blastKernels = new Map<number, BlastPoint[]>();
+function blastKernel(radius: number): BlastPoint[] {
+  let kernel = blastKernels.get(radius);
+  if (kernel) return kernel;
+  kernel = [];
+  const r2 = radius * radius;
+  for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
+    const d2 = dx * dx + dy * dy;
+    if (d2 > r2) continue;
+    const dist = Math.sqrt(d2);
+    kernel.push({ dx, dy, dist, falloff: 1 - dist / (radius + 0.5) });
+  }
+  if (blastKernels.size >= 32) blastKernels.delete(blastKernels.keys().next().value!);
+  blastKernels.set(radius, kernel);
+  return kernel;
+}
+
 
 export interface GrabbedParticle {
   dx: number;
@@ -39,6 +59,8 @@ interface WorldSnapshot {
   absorbedMat: Uint8Array;
   meta: Uint8Array;
   seed: Uint8Array;
+  sensors: SensorPin[];
+  wires: HangingWire[];
 }
 
 export const PRESET_STREET: Omit<EnvironmentConfig, 'preset' | 'lastBasePreset'> = {
@@ -49,6 +71,8 @@ export const PRESET_STREET: Omit<EnvironmentConfig, 'preset' | 'lastBasePreset'>
   windSpeed: 2.4,
   windAngleDeg: 0, // Blowing gently East (->)
   windGusts: true,
+  precipitation: false,
+  storm: false,
   boundary: 'open_sky',
 };
 
@@ -60,6 +84,8 @@ export const PRESET_HOME: Omit<EnvironmentConfig, 'preset' | 'lastBasePreset'> =
   windSpeed: 0,
   windAngleDeg: 0,
   windGusts: false,
+  precipitation: false,
+  storm: false,
   boundary: 'closed',
 };
 
@@ -112,6 +138,7 @@ export class World {
   public gpuStateTexB!: Uint8Array;
 
   public sensors: SensorPin[] = [];
+  public wires: HangingWire[] = [];
   public stepTick = 1;
   public timeSec = 0;
   public activeFanDir: FanDirection = 0;
@@ -198,6 +225,7 @@ export class World {
     this.airSize = this.airW * this.airH;
     this.undoStack = [];
     this.sensors = [];
+    this.wires = [];
     this.allocate();
   }
 
@@ -237,6 +265,7 @@ export class World {
   public clear(): void {
     this.pushUndo();
     this.sensors = [];
+    this.wires = [];
     this.mat.fill(MAT.EMPTY);
     this.temp.fill(this.env.ambientTempC);
     this.vx.fill(0);
@@ -268,6 +297,8 @@ export class World {
       absorbedMat: this.absorbedMat.slice(),
       meta: this.meta.slice(),
       seed: this.seed.slice(),
+      sensors: this.sensors.map(pin => ({...pin})),
+      wires: this.wires.map(wire => ({...wire, points: wire.points.map(point => ({...point}))})),
     });
   }
 
@@ -280,6 +311,8 @@ export class World {
     this.absorbedMat.set(snap.absorbedMat);
     this.meta.set(snap.meta);
     this.seed.set(snap.seed);
+    this.sensors = snap.sensors;
+    this.wires = snap.wires;
     this.vx.fill(0);
     this.vy.fill(0);
     this.volt.fill(0);
@@ -288,6 +321,8 @@ export class World {
     this.releaseHand(true);
     return true;
   }
+
+  public resetUndoHistory(): void { this.undoStack = []; }
 
   public applyPreset(preset: 'street' | 'home'): void {
     const base = preset === 'street' ? PRESET_STREET : PRESET_HOME;
@@ -398,12 +433,7 @@ export class World {
   }
 
   public addImpulseExplosion(cx: number, cy: number, radius: number, power: number, peakTempC: number): void {
-    const r2 = radius * radius;
-    const minX = Math.max(0, Math.floor(cx - radius));
-    const maxX = Math.min(this.width - 1, Math.ceil(cx + radius));
-    const minY = Math.max(0, Math.floor(cy - radius));
-    const maxY = Math.min(this.height - 1, Math.ceil(cy + radius));
-
+    radius = Math.max(1, Math.round(radius));
     this.events.explosionEnergy += power * radius;
 
     // Inject shockwave overpressure and radial blast velocity into Air Grid
@@ -429,15 +459,10 @@ export class World {
     }
 
     // Apply blast stress, fracture solids, heat core, and fling shrapnel
-    for (let y = minY; y <= maxY; y++) {
-      for (let x = minX; x <= maxX; x++) {
-        const dx = x - cx;
-        const dy = y - cy;
-        const d2 = dx * dx + dy * dy;
-        if (d2 > r2) continue;
-
-        const dist = Math.sqrt(d2);
-        const falloff = 1 - dist / (radius + 0.5);
+    // Cached radial geometry keeps the same blast calculations and random order.
+    for (const { dx, dy, dist, falloff } of blastKernel(radius)) {
+        const x = cx + dx, y = cy + dy;
+        if (!this.inBounds(x, y)) continue;
         const i = y * this.width + x;
         const m = this.mat[i];
         const overpressureKPa = power * 680 * falloff * falloff;
@@ -469,7 +494,6 @@ export class World {
           }
         }
       }
-    }
   }
 
   public fractureCell(i: number, dx: number, dy: number, dist: number, impulse: number): void {

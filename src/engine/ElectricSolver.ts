@@ -1,5 +1,6 @@
 import { ELEC_COND_LUT, MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
 import { World } from './World';
+import { wireConnections } from './Wires';
 
 export class ElectricSolver {
   private frontierA: Int32Array;
@@ -122,6 +123,7 @@ export class ElectricSolver {
     if (frontLen === 0) return;
 
     // 2. Fast Wavefront Voltage Propagation from active sources across connected circuits (up to 160 hops!)
+    const wires = wireConnections(world);
     const maxHops = relaxPasses * 22;
     let curFront = this.frontierA;
     let nxtFront = this.frontierB;
@@ -139,6 +141,16 @@ export class ElectricSolver {
         const cSrc = this.effectiveConductivity(m, meta[i]);
         const x = i % w;
         const y = (i / w) | 0;
+        // Insulated flexible wires transfer voltage between fixed endpoints.
+        for (const j of wires.get(i) || []) {
+          const cj = this.effectiveConductivity(mat[j], meta[j]);
+          const candV = vSrc * .98;
+          if (cj > 0 && candV > volt[j] + .18) {
+            volt[j] = candV;
+            if (!this.inFrontier[j]) { this.inFrontier[j] = 1; nxtFront[nextLen++] = j; }
+            if (!this.inActive[j]) { this.inActive[j] = 1; this.activeCells[activeLen++] = j; }
+          }
+        }
 
         for (let dy = -1; dy <= 1; dy++) {
           const ny = y + dy;

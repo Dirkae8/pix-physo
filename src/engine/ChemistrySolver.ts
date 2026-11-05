@@ -104,7 +104,7 @@ export class ChemistrySolver {
             temp[i] = Math.min(3600, temp[i] + 140);
           }
 
-          const decay = m === MAT.ELECTRIC_ARC ? 16 : m === MAT.PLASMA ? 8 : 5;
+          const decay = m === MAT.ELECTRIC_ARC ? 16 : m === MAT.PLASMA ? 8 : 3;
           if (wet[i] <= decay) {
             mat[i] = m === MAT.FIRE && world.rand() < 0.28 ? MAT.SMOKE : MAT.EMPTY;
             wet[i] = mat[i] === MAT.SMOKE ? 150 : 0;
@@ -184,7 +184,7 @@ export class ChemistrySolver {
           }
 
           if (hasOxidizer && (t >= def.ignitionTempC || (nearFlame && t >= def.ignitionTempC * 0.45))) {
-            const prob = def.flammability * (nearPureO2 ? 2.8 : nearFlame ? 1.0 : 0.35);
+            const prob = def.flammability * 0.35 * (nearPureO2 ? 2.8 : nearFlame ? 1.0 : 0.35);
             if (world.rand() < prob) {
               if (def.state !== 'gas' && def.explosivePower && def.explosivePower >= 0.6) {
                 const pwr = def.explosivePower * (nearPureO2 ? 1.45 : 1.0);

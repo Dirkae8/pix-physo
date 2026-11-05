@@ -5,6 +5,7 @@ import { ChemistrySolver } from './ChemistrySolver';
 import { ElectricSolver } from './ElectricSolver';
 import { MechanicsSolver } from './MechanicsSolver';
 import { ThermalSolver } from './ThermalSolver';
+import { stepWires } from './Wires';
 import { World, getResolutionDims } from './World';
 
 export class SimulationEngine {
@@ -53,45 +54,50 @@ export class SimulationEngine {
     this.world.events.sizzleCount = 0;
     this.world.events.fractureCount = 0;
 
-    let ticksToRun = 1;
-    if (!forceSingleStep) {
-      this.stepAccumulator += this.speedMultiplier;
-      ticksToRun = Math.floor(this.stepAccumulator);
-      this.stepAccumulator -= ticksToRun;
-    }
-
-    if (ticksToRun <= 0) {
-      return performance.now() - t0;
-    }
-
+    // Keep simulation steps intact while spreading expensive accelerated frames.
+    // If the hardware cannot keep up, the requested multiplier is a ceiling, not skipped physics.
+    this.stepAccumulator = forceSingleStep ? 1 : Math.min(4, this.stepAccumulator + this.speedMultiplier);
     const isBalance = settings.computeMode === 'balance70';
     const mechSubsteps = Math.max(1, settings.substeps);
-
-    for (let t = 0; t < ticksToRun; t++) {
+    let ticks = 0;
+    while (this.stepAccumulator >= 1 && ticks < 4) {
+      if (ticks > 0 && performance.now() - t0 > 12) break;
+      this.stepAccumulator -= 1;
+      ticks++;
       this.world.timeSec += 1 / 60;
-
-      // Air Navier-Stokes continuum solver (heavier CPU iterations in 70/30 Balance mode; lighter on CPU in 90/10 GPU mode)
+      this.stepWeather();
+      stepWires(this.world);
       this.airSolver.step(this.world, isBalance ? 4 : 2);
-
-      // Thermodynamics & Clausius-Clapeyron phase transitions
       this.thermalSolver.step(this.world);
-      if (isBalance) {
-        this.thermalSolver.step(this.world);
-      }
-
-      // Electricity, Joule heating, Batteries, Generators, Buttons, Switches, Tesla coils
+      if (isBalance) this.thermalSolver.step(this.world);
       this.electricSolver.step(this.world, isBalance ? 8 : 5);
-
-      // Chemical & Nuclear reactions, Absorption, Dissolution
       this.chemistrySolver.step(this.world);
-
-      // Multi-substep Hydrostatics, Granular Rheology & Gas Buoyancy
-      for (let s = 0; s < mechSubsteps; s++) {
-        this.mechanicsSolver.step(this.world, s === 0);
-      }
+      for (let s = 0; s < mechSubsteps; s++) this.mechanicsSolver.step(this.world, s === 0);
     }
+    if (forceSingleStep) this.stepAccumulator = 0;
 
     return performance.now() - t0;
+  }
+
+  private stepWeather(): void {
+    const w = this.world;
+    if (!w.env.precipitation || w.env.boundary === 'closed') return;
+    const count = Math.max(1, Math.round(w.width / 110));
+    for (let n = 0; n < count; n++) {
+      const x = Math.floor(w.rand() * w.width);
+      if (w.mat[x] !== MAT.EMPTY) continue;
+      const snow = w.env.ambientTempC <= 0;
+      w.setCell(x, 0, snow ? MAT.SNOW : MAT.WATER, w.env.ambientTempC);
+      w.vy[x] = snow ? 0.4 : 1.5;
+    }
+    if (w.env.storm && w.rand() < 0.0008) {
+      const x = Math.floor(w.rand() * w.width);
+      for (let y = 0; y < Math.min(w.height, 50); y++) {
+        const xx = Math.max(0, Math.min(w.width - 1, x + Math.round(Math.sin(y * .3) * 2)));
+        if (w.mat[y * w.width + xx] !== MAT.EMPTY) break;
+        w.setCell(xx, y, MAT.ELECTRIC_ARC);
+      }
+    }
   }
 
   public applyBrushStroke(

@@ -173,9 +173,13 @@ export const DEMO_SCENES: DemoScene[] = [
       fillRect(world, 73, pY + 6, 95, pY + 8, MAT.COPPER_WIRE);
       fillRect(world, 96, pY + 1, 112, pY + 13, MAT.SWITCH);
       fillRect(world, 113, pY + 6, 138, pY + 8, MAT.COPPER_WIRE);
-      fillRect(world, 139, pY, 158, pY + 13, MAT.BATTERY);
-      // Vertical insulated cable up to the Fans
-      fillRect(world, 58, botY - 4, 60, pY + 6, MAT.INSULATED_WIRE);
+      // Battery feeds the input side; placing it after the switch would bypass it.
+      fillRect(world, 32, pY, 51, pY + 13, MAT.BATTERY);
+      fillRect(world, 52, pY + 6, 54, pY + 8, MAT.COPPER_WIRE);
+      // Route the fan supply from the switched side, not directly from the generator.
+      fillRect(world, 58, botY - 4, 60, botY + 12, MAT.INSULATED_WIRE);
+      fillRect(world, 58, botY + 10, 120, botY + 12, MAT.INSULATED_WIRE);
+      fillRect(world, 118, botY + 10, 120, pY + 6, MAT.INSULATED_WIRE);
 
       // Coal brazier at tunnel entrance producing visible warm smoke & embers for streamline visualization
       fillRect(world, 82, botY - 12, 108, botY - 1, MAT.COAL);

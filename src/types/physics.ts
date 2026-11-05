@@ -47,6 +47,8 @@ export interface EnvironmentConfig {
   windSpeed: number;
   windAngleDeg: number;
   windGusts: boolean;
+  precipitation: boolean;
+  storm: boolean;
   boundary: BoundaryMode;
 }
 
