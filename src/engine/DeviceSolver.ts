@@ -49,13 +49,27 @@ export class DeviceSolver {
       const dx = direction === 0 ? 1 : direction === 2 ? -1 : 0;
       const dy = direction === 1 ? 1 : direction === 3 ? -1 : 0;
       const source = (y - dy) * w + x - dx, target = (y + dy) * w + x + dx;
-      if (STATE_LUT[mat[source]] !== 3 || mat[target] !== MAT.EMPTY) continue;
+      if (STATE_LUT[mat[source]] !== 3) continue;
       if (type === MAT.VALVE) {
         const sourceAir = world.airPressure[world.airIdxFromCell(x-dx,y-dy)] + world.stress[source];
         const targetAir = world.airPressure[world.airIdxFromCell(x+dx,y+dy)] + world.stress[target];
         if (sourceAir <= targetAir + .1) continue;
       }
-      world.swapCells(source, target);
+      // Push a contiguous straight column of the same liquid to the first open cell.
+      // This preserves every cell and cannot tunnel through a wall or another liquid.
+      let vacancy = target, distance = 1;
+      while (mat[vacancy] === mat[source] && distance < 32) {
+        distance++;
+        const tx=x+dx*distance, ty=y+dy*distance;
+        if (!world.inBounds(tx,ty)) { vacancy=-1; break; }
+        vacancy=ty*w+tx;
+      }
+      if (vacancy < 0 || (mat[vacancy] !== MAT.EMPTY && STATE_LUT[mat[vacancy]] !== 4)) continue;
+      while (distance > 1) {
+        const previous=(y+dy*(distance-1))*w+x+dx*(distance-1);
+        world.swapCells(previous,vacancy); vacancy=previous; distance--;
+      }
+      world.swapCells(source,target);
     }
   }
 }

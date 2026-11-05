@@ -1,5 +1,6 @@
 import { MAT } from '../materials/registry';
 import { World } from './World';
+import { makeWheel, makeSpring } from './MechanicalSystem';
 
 export interface DemoScene {
   id: string;
@@ -281,6 +282,23 @@ export const DEMO_SCENES: DemoScene[] = [
       // Steel lightning-rod electrodes dipping into the brine
       fillRect(world, cx - 54, floorY - 76, cx - 50, floorY - 12, MAT.STEEL);
       fillRect(world, cx + 50, floorY - 76, cx + 54, floorY - 12, MAT.STEEL);
+    },
+  },
+  {
+    id: 'mechanical_drive',
+    title: 'Механический привод и дробилка',
+    subtitle: 'Аккумулятор и переключатель питают мотор; шестерня передаёт вращение дробилке. Справа — подвешенная пружина.',
+    build: (world: World) => {
+      world.clear(); world.applyPreset('home');
+      const x=Math.round(world.width*.35), y=Math.round(world.height*.45), radius=12;
+      fillRect(world,x-38,y,x,y,MAT.COPPER_WIRE);
+      fillRect(world,x-42,y-2,x-38,y+2,MAT.BATTERY);
+      fillRect(world,x-24,y-1,x-22,y+1,MAT.SWITCH);
+      world.wheels.push(makeWheel('motor',x,y,radius));
+      world.wheels.push(makeWheel('gear',x+2*radius,y,radius));
+      world.wheels.push(makeWheel('crusher',x+4*radius,y,radius));
+      fillRect(world,x+5*radius,y-3,x+5*radius,y+3,MAT.GLASS);
+      world.mechanicalSprings.push(makeSpring(x+7*radius,y-25,x+7*radius,y+2));
     },
   },
   {

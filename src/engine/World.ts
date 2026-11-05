@@ -5,8 +5,9 @@ import {
   HoverProbe,
   SensorPin,
 } from '../types/physics';
-import { DENSITY_LUT, MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
+import { MAT, MATERIAL_BY_ID, STATE_LUT, densityAt } from '../materials/registry';
 import type { HangingWire } from './Wires';
+import type { Wheel, MechanicalSpring } from './MechanicalSystem';
 
 interface BlastPoint { dx: number; dy: number; dist: number; falloff: number; }
 const blastKernels = new Map<number, BlastPoint[]>();
@@ -61,6 +62,8 @@ interface WorldSnapshot {
   seed: Uint8Array;
   sensors: SensorPin[];
   wires: HangingWire[];
+  wheels: Wheel[];
+  mechanicalSprings: MechanicalSpring[];
 }
 
 export const PRESET_STREET: Omit<EnvironmentConfig, 'preset' | 'lastBasePreset'> = {
@@ -128,20 +131,24 @@ export class World {
   public seed!: Uint8Array;
   public stamp!: Uint16Array;
 
-  // Continuum Air arrays (synced with GPU Navier-Stokes pipeline)
+  // Coarse air grid; the physics runs on the CPU.
   public airPressure!: Float32Array; // Delta kPa relative to env.pressureKPa
   public airVx!: Float32Array;       // m/s
-  public airVy!: Float32Array;
-  public airOxygen!: Float32Array;  // local oxygen fraction of air, 0..0.21       // m/s
+  public airVy!: Float32Array;       // m/s
+  public airOxygen!: Float32Array;   // local oxygen fraction, 0..0.21
   public airWall!: Uint8Array;       // 1 if blocked by solid cell
+  public waveHeight!: Float32Array;  // wind-driven shallow-water surface displacement
+  public waveVelocity!: Float32Array;
 
-  // Packed RGBA8 texture buffer uploaded to GPU every frame for ultra-fast shader access:
-  // R = matId (0..79), G = normalized temp/glow, B = seed/wetness, A = volt/meta/stress
+  // Packed RGBA8 texture buffer uploaded to the GPU for rendering:
+  // R = material id, G = normalized temp/glow, B = seed/wetness, A = volt/meta/stress
   public gpuStateTexA!: Uint8Array;
   public gpuStateTexB!: Uint8Array;
 
   public sensors: SensorPin[] = [];
   public wires: HangingWire[] = [];
+  public wheels: Wheel[] = [];
+  public mechanicalSprings: MechanicalSpring[] = [];
   public stepTick = 1;
   public timeSec = 0;
   public activeFanDir: FanDirection = 0;
@@ -211,6 +218,8 @@ export class World {
     this.airOxygen = new Float32Array(this.airSize);
     this.airOxygen.fill(.21);
     this.airWall = new Uint8Array(this.airSize);
+    this.waveHeight = new Float32Array(this.width);
+    this.waveVelocity = new Float32Array(this.width);
 
     this.gpuStateTexA = new Uint8Array(n * 4);
     this.gpuStateTexB = new Uint8Array(n * 4);
@@ -232,6 +241,7 @@ export class World {
     this.undoStack = [];
     this.sensors = [];
     this.wires = [];
+    this.wheels = []; this.mechanicalSprings = [];
     this.allocate();
   }
 
@@ -272,6 +282,7 @@ export class World {
     this.pushUndo();
     this.sensors = [];
     this.wires = [];
+    this.wheels = []; this.mechanicalSprings = [];
     this.mat.fill(MAT.EMPTY);
     this.temp.fill(this.env.ambientTempC);
     this.vx.fill(0);
@@ -287,6 +298,7 @@ export class World {
     this.airVy.fill(0);
     this.airOxygen.fill(.21);
     this.airWall.fill(0);
+    this.waveHeight.fill(0); this.waveVelocity.fill(0);
     for (let i = 0; i < this.size; i++) {
       this.seed[i] = this.randByte();
     }
@@ -306,6 +318,8 @@ export class World {
       seed: this.seed.slice(),
       sensors: this.sensors.map(pin => ({...pin})),
       wires: this.wires.map(wire => ({...wire, points: wire.points.map(point => ({...point}))})),
+      wheels: this.wheels.map(wheel => ({...wheel})),
+      mechanicalSprings: this.mechanicalSprings.map(spring => ({...spring})),
     });
   }
 
@@ -320,6 +334,7 @@ export class World {
     this.seed.set(snap.seed);
     this.sensors = snap.sensors;
     this.wires = snap.wires;
+    this.wheels = snap.wheels; this.mechanicalSprings = snap.mechanicalSprings;
     this.vx.fill(0);
     this.vy.fill(0);
     this.volt.fill(0);
@@ -665,7 +680,7 @@ export class World {
       voltage: this.volt[i],
       charge: this.current[i],
       stress: this.stress[i],
-      density: DENSITY_LUT[m],
+      density: densityAt(m, this.temp[i]),
     };
   }
 

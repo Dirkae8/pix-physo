@@ -2,6 +2,7 @@ import { SoundEngine } from '../audio/SoundEngine';
 import { DEMO_SCENES } from '../engine/Demos';
 import { SimulationEngine } from '../engine/SimulationEngine';
 import { makeWire } from '../engine/Wires';
+import { makeWheel, makeSpring, type WheelKind } from '../engine/MechanicalSystem';
 import { deleteWorld, listWorlds, loadWorld, saveWorld, saveTemplate, listTemplates, getTemplate, deleteTemplate, placeTemplate, type Template } from '../engine/WorldStore';
 import { ELEC_COND_LUT } from '../materials/registry';
 import { ThermalSolver } from '../engine/ThermalSolver';
@@ -84,6 +85,8 @@ export class AppUI {
   private templateRegion: [[number, number], [number, number]] | null = null;
   private placingTemplate: Template | null = null;
   private measureStart: [number, number] | null = null;
+  private mechanicalMode: WheelKind | 'spring' | 'remove' | null = null;
+  private springStart: [number, number] | null = null;
   private wireMode = false;
   private wireStart: [number, number] | null = null;
   private wireTension = .5;
@@ -326,6 +329,9 @@ export class AppUI {
               <button class="mini-btn" data-edit="ruler">Линейка</button>
               <button class="mini-btn" data-edit="rectangle">Прямоугольник</button>
               <button class="mini-btn" data-edit="ellipse">Эллипс</button>
+              <select class="dark-select" id="selMechanical" style="width:165px;flex:0 0 165px" title="Колёса закреплены на осях. Двигатель ставьте на проводник, для зацепления расположите колёса вплотную.">
+                <option value="">Механизмы…</option><option value="gear">Шестерня</option><option value="motor">Электродвигатель</option><option value="turbine">Водяная турбина</option><option value="crusher">Дробилка</option><option value="spring">Пружина</option><option value="remove">Удалить механизм</option>
+              </select>
               <button class="mini-btn" data-edit="template" title="Выделить прямоугольную область для сохранения">Выделить схему</button>
               <button class="mini-btn" id="btnZoomReset">Масштаб 1×</button>
               <button class="mini-btn" id="btnWire" title="Две точки на проводниках">Кабель</button>
@@ -757,14 +763,24 @@ export class AppUI {
     });
 
     this.root.querySelectorAll<HTMLButtonElement>('[data-edit]').forEach(button => button.addEventListener('click', () => {
-      this.editMode = button.dataset.edit as typeof this.editMode; this.measureStart = null; this.placingTemplate = null; this.wireMode = false; this.wireStart = null;
+      this.editMode = button.dataset.edit as typeof this.editMode; this.measureStart = null; this.placingTemplate = null; this.mechanicalMode = null; this.springStart = null;
+      (this.root.querySelector('#selMechanical') as HTMLSelectElement).value = ''; this.wireMode = false; this.wireStart = null;
       this.root.querySelector('#btnWire')!.classList.remove('active');
       this.root.querySelectorAll('[data-edit]').forEach(b => b.classList.remove('active')); button.classList.add('active');
     }));
     this.root.querySelector('#btnCatalog')!.addEventListener('click', () => { this.root.querySelector('.app-shell')!.classList.toggle('catalog-collapsed'); requestAnimationFrame(() => this.fitCanvasViewport()); });
     this.root.querySelector('#btnZoomReset')!.addEventListener('click', () => { this.zoom = 1; this.panX = this.panY = 0; this.applyCamera(); });
+    this.root.querySelector('#selMechanical')!.addEventListener('change', e => {
+      const value = (e.target as HTMLSelectElement).value;
+      this.mechanicalMode = value ? value as WheelKind | 'spring' | 'remove' : null;
+      this.springStart = null; this.wireMode = false; this.wireStart = null; this.editMode = 'paint';
+      this.root.querySelector('#btnWire')!.classList.remove('active');
+      this.root.querySelectorAll('[data-edit]').forEach(b => b.classList.remove('active'));
+      if (!value) this.root.querySelector('[data-edit="paint"]')!.classList.add('active');
+    });
     this.root.querySelector('#btnWire')!.addEventListener('click', () => {
-      this.wireMode = !this.wireMode; this.wireStart = null;
+      this.wireMode = !this.wireMode; this.wireStart = null; this.mechanicalMode = null; this.springStart = null;
+      (this.root.querySelector('#selMechanical') as HTMLSelectElement).value = '';
       if (this.wireMode) { this.editMode = 'paint'; this.root.querySelectorAll('[data-edit]').forEach(b => b.classList.remove('active')); }
       this.root.querySelector('#btnWire')!.classList.toggle('active', this.wireMode);
       this.probeEl.textContent = this.wireMode ? 'Кабель: выберите две точки на проводниках' : '';
@@ -1022,20 +1038,27 @@ export class AppUI {
     this.root.querySelector('#btnSavePng')!.addEventListener('click', () => {
       const a = document.createElement('a');
       a.download = `pixphyso-${Date.now()}.png`;
-      a.href = this.simCanvas.toDataURL('image/png');
+      const composite=document.createElement('canvas'); composite.width=this.simCanvas.width; composite.height=this.simCanvas.height;
+      const ctx=composite.getContext('2d');
+      if (ctx) { ctx.drawImage(this.simCanvas,0,0); ctx.drawImage(this.hudCanvas,0,0,composite.width,composite.height); }
+      a.href = (ctx ? composite : this.simCanvas).toDataURL('image/png');
       a.click();
     });
 
     this.root.querySelector('#btnExportSave')!.addEventListener('click', () => {
       const w = this.engine.world;
       const payload = {
-        version: 2,
+        version: 3,
         width: w.width,
         height: w.height,
         env: w.env,
         mat: Array.from(w.mat),
         temp: Array.from(w.temp),
         meta: Array.from(w.meta),
+        vx: Array.from(w.vx), vy: Array.from(w.vy), wetness: Array.from(w.wetness), absorbedMat: Array.from(w.absorbedMat),
+        volt: Array.from(w.volt), current: Array.from(w.current), stress: Array.from(w.stress), seed: Array.from(w.seed),
+        airPressure: Array.from(w.airPressure), airVx: Array.from(w.airVx), airVy: Array.from(w.airVy), airOxygen: Array.from(w.airOxygen), waveHeight: Array.from(w.waveHeight), waveVelocity: Array.from(w.waveVelocity),
+        sensors: w.sensors, wires: w.wires, wheels: w.wheels, mechanicalSprings: w.mechanicalSprings, timeSec: w.timeSec, stepTick: w.stepTick,
       };
       const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
       const a = document.createElement('a');
@@ -1050,19 +1073,30 @@ export class AppUI {
       try {
         const txt = await file.text();
         const parsed = JSON.parse(txt);
-        if (parsed.width && parsed.height && Array.isArray(parsed.mat)) {
-          this.engine.world.resize(parsed.width, parsed.height);
-          this.engine.world.mat.set(parsed.mat);
-          if (Array.isArray(parsed.temp)) this.engine.world.temp.set(parsed.temp);
-          if (Array.isArray(parsed.meta)) this.engine.world.meta.set(parsed.meta);
-          if (parsed.env) Object.assign(this.engine.world.env, parsed.env);
-          this.fitCanvasViewport();
-          this.syncEnvironmentUI();
-          this.exitModalEl.classList.add('hidden');
+        if (!Number.isInteger(parsed.width) || !Number.isInteger(parsed.height) || parsed.width < 1 || parsed.height < 1 || parsed.width > 2000 || parsed.height > 2000 || !Array.isArray(parsed.mat) || parsed.mat.length !== parsed.width*parsed.height || parsed.mat.some((m: unknown) => !Number.isInteger(m) || (m as number) < 0 || (m as number) >= MATERIAL_BY_ID.length)) throw new Error('Повреждённый файл мира');
+        const fields=['mat','temp','meta','vx','vy','wetness','absorbedMat','volt','current','stress','seed','airPressure','airVx','airVy','airOxygen','waveHeight','waveVelocity'] as const;
+        const n=parsed.width*parsed.height, airSize=Math.ceil(parsed.width/4)*Math.ceil(parsed.height/4);
+        for (const field of fields) if (parsed[field] !== undefined) {
+          const values=parsed[field] as unknown;
+          const expected=field.startsWith('air') ? airSize : field.startsWith('wave') ? parsed.width : n;
+          if (!Array.isArray(values) || values.length !== expected || values.some(v => typeof v !== 'number' || !Number.isFinite(v))) throw new Error('Повреждённые данные поля');
         }
+        // Validate before touching the running world so a damaged file cannot erase it.
+        const world=this.engine.world; world.resize(parsed.width,parsed.height); world.clear(); world.resetUndoHistory();
+        for (const field of fields) if (Array.isArray(parsed[field])) world[field].set(parsed[field]);
+        if (parsed.env && typeof parsed.env === 'object') Object.assign(world.env, parsed.env);
+        const valid = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+        if (Array.isArray(parsed.sensors)) world.sensors=parsed.sensors.filter((p: any) => p && Number.isInteger(p.x) && Number.isInteger(p.y) && world.inBounds(p.x,p.y)).slice(0,16);
+        if (Array.isArray(parsed.wheels)) world.wheels=parsed.wheels.filter((p: any) => p && ['gear','motor','turbine','crusher'].includes(p.kind) && Number.isInteger(p.x) && Number.isInteger(p.y) && Number.isInteger(p.radius) && p.radius>=4 && p.radius<=32 && valid(p.angle) && valid(p.omega) && world.inBounds(p.x,p.y)).slice(0,64);
+        if (Array.isArray(parsed.mechanicalSprings)) world.mechanicalSprings=parsed.mechanicalSprings.filter((p: any) => p && ['ax','ay','x','y','vx','vy','restLength','stiffness','damping'].every(k => valid(p[k])) && world.inBounds(p.ax,p.ay) && world.inBounds(p.x,p.y)).slice(0,64);
+        if (Array.isArray(parsed.wires)) world.wires=parsed.wires.filter((p: any) => p && ['ax','ay','bx','by'].every(k => Number.isInteger(p[k])) && valid(p.tension) && p.tension>=0 && p.tension<=1 && world.inBounds(p.ax,p.ay) && world.inBounds(p.bx,p.by) && Array.isArray(p.points) && p.points.length>=3 && p.points.length<=256 && p.points.every((q: any) => q && ['x','y','oldX','oldY'].every(k => valid(q[k])))).slice(0,128);
+        if (valid(parsed.timeSec)) world.timeSec=parsed.timeSec;
+        if (Number.isInteger(parsed.stepTick)) world.stepTick=parsed.stepTick & 0xffff;
+        this.fitCanvasViewport(); this.syncEnvironmentUI(); this.exitModalEl.classList.add('hidden');
       } catch (err) {
         console.error('Import failed:', err);
-      }
+        window.alert('Не удалось загрузить файл мира: ' + String(err));
+      } finally { (e.target as HTMLInputElement).value = ''; }
     });
 
     this.root.querySelector('#btnResetLab')!.addEventListener('click', () => {
@@ -1112,6 +1146,30 @@ export class AppUI {
       this.pointerInteractedSwitch = false;
       if (e.pointerType !== 'touch') this.canvasFrame.setPointerCapture(e.pointerId);
 
+      if (this.mechanicalMode && !this.pointerErase) {
+        this.pointerInteractedSwitch = true;
+        const world = this.engine.world;
+        if (this.mechanicalMode === 'spring') {
+          if (!this.springStart) this.springStart = [sx,sy];
+          else { const [ax,ay] = this.springStart; if (Math.hypot(sx-ax,sy-ay)>=4 && world.mechanicalSprings.length<64) { world.pushUndo(); world.mechanicalSprings.push(makeSpring(ax,ay,sx,sy)); } this.springStart=null; }
+        } else if (this.mechanicalMode === 'remove') {
+          let best=-1, dist=Infinity;
+          for (let n=0;n<world.wheels.length;n++) { const wheel=world.wheels[n], d=Math.hypot(sx-wheel.x,sy-wheel.y); if (d<=wheel.radius && d<dist) { best=n; dist=d; } }
+          if (best>=0) { world.pushUndo(); world.wheels.splice(best,1); }
+          else { const n=world.mechanicalSprings.findIndex(s => Math.min(Math.hypot(sx-s.ax,sy-s.ay),Math.hypot(sx-s.x,sy-s.y))<6); if (n>=0) { world.pushUndo(); world.mechanicalSprings.splice(n,1); } }
+        } else if (world.wheels.length < 64) {
+          const radius=Math.max(4,Math.min(32,this.brushRadius*2+4)); let x=sx, y=sy;
+          // Snap nearby circles onto a tooth contact so precise pixel clicks are unnecessary.
+          if (this.mechanicalMode !== 'motor') for (const other of world.wheels) {
+            const dx=x-other.x, dy=y-other.y, distance=Math.hypot(dx,dy), desired=radius+other.radius;
+            if (distance>0 && Math.abs(distance-desired)<=5) { x=Math.round(other.x+dx/distance*desired); y=Math.round(other.y+dy/distance*desired); break; }
+          }
+          if (world.inBounds(x,y) && !world.wheels.some(other => Math.hypot(x-other.x,y-other.y)<radius+other.radius-1.5)) {
+            world.pushUndo(); world.wheels.push(makeWheel(this.mechanicalMode,x,y,radius));
+          }
+        }
+        return;
+      }
       if (this.placingTemplate && !this.pointerErase) {
         placeTemplate(this.engine.world, this.placingTemplate, sx, sy); this.placingTemplate = null;
         (this.root.querySelector('#btnWorlds') as HTMLElement).textContent = 'Миры'; this.pointerInteractedSwitch = true; return;
@@ -1369,6 +1427,44 @@ export class AppUI {
     const world = this.engine.world;
     const scaleX = cw / world.width;
     const scaleY = ch / world.height;
+
+    // Thin highlights follow the simulated wind-driven surface displacement.
+    const surface=this.engine.surfaceWaveSolver.getSurfaceY();
+    if (surface.length===world.width) {
+      ctx.strokeStyle='rgba(220,235,240,.55)'; ctx.lineWidth=1; ctx.beginPath(); let drawing=false;
+      for (let x=0;x<world.width;x++) {
+        const y=surface[x];
+        if (y<0 || Math.abs(world.waveHeight[x])<.03) { drawing=false; continue; }
+        const px=(x+.5)*scaleX, py=(y+.5-world.waveHeight[x])*scaleY;
+        if (!drawing) ctx.moveTo(px,py); else ctx.lineTo(px,py); drawing=true;
+      }
+      ctx.stroke();
+    }
+
+    // Pinned, dynamically coupled mechanical wheels and anchored springs.
+    for (const wheel of world.wheels) {
+      const teeth=Math.max(8,Math.round(wheel.radius*1.2));
+      ctx.beginPath();
+      for (let i=0;i<teeth*4;i++) {
+        const angle=wheel.angle+i*Math.PI*2/(teeth*4), r=wheel.radius+(i%4===1||i%4===2 ? .8 : -.8);
+        const x=(wheel.x+.5+Math.cos(angle)*r)*scaleX, y=(wheel.y+.5+Math.sin(angle)*r)*scaleY;
+        if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.closePath(); ctx.fillStyle='rgba(45,45,45,.88)'; ctx.fill(); ctx.strokeStyle='#ddd'; ctx.lineWidth=1.2; ctx.stroke();
+      ctx.beginPath();
+      for (let n=0;n<4;n++) { const a=wheel.angle+n*Math.PI/2; ctx.moveTo((wheel.x+.5)*scaleX,(wheel.y+.5)*scaleY); ctx.lineTo((wheel.x+.5+Math.cos(a)*wheel.radius*.72)*scaleX,(wheel.y+.5+Math.sin(a)*wheel.radius*.72)*scaleY); }
+      ctx.strokeStyle='#aaa'; ctx.stroke();
+      ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc((wheel.x+.5)*scaleX,(wheel.y+.5)*scaleY,Math.max(2,2*scaleX),0,Math.PI*2); ctx.fill();
+      if (wheel.kind!=='gear') { ctx.font='bold 10px Roboto Mono'; ctx.textAlign='center'; ctx.fillText(wheel.kind==='motor'?'M':wheel.kind==='turbine'?'T':'Д',(wheel.x+.5)*scaleX,(wheel.y+.5)*scaleY-4); }
+    }
+    for (const spring of world.mechanicalSprings) {
+      const dx=spring.x-spring.ax, dy=spring.y-spring.ay, length=Math.max(1,Math.hypot(dx,dy)), nx=-dy/length, ny=dx/length;
+      ctx.beginPath(); ctx.moveTo((spring.ax+.5)*scaleX,(spring.ay+.5)*scaleY);
+      for(let i=1;i<16;i++) { const t=i/16, bend=(i%2?1:-1)*2.2; ctx.lineTo((spring.ax+dx*t+nx*bend+.5)*scaleX,(spring.ay+dy*t+ny*bend+.5)*scaleY); }
+      ctx.lineTo((spring.x+.5)*scaleX,(spring.y+.5)*scaleY); ctx.strokeStyle='#ddd'; ctx.lineWidth=1.5; ctx.stroke();
+      ctx.beginPath(); ctx.arc((spring.x+.5)*scaleX,(spring.y+.5)*scaleY,Math.max(2,3*scaleX),0,Math.PI*2); ctx.fillStyle='#ddd'; ctx.fill();
+    }
+    if (this.springStart) { ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc((this.springStart[0]+.5)*scaleX,(this.springStart[1]+.5)*scaleY,4,0,Math.PI*2); ctx.fill(); }
 
     // Hanging wires are simulated as constrained flexible segments.
     for (const wire of world.wires) {

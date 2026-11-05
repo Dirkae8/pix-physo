@@ -1,4 +1,4 @@
-import { ELEC_COND_LUT, MAT } from '../materials/registry';
+import { ELEC_COND_LUT, MAT, STATE_LUT } from '../materials/registry';
 import type { World } from './World';
 
 export interface WirePoint { x: number; y: number; oldX: number; oldY: number }
@@ -19,6 +19,7 @@ export function stepWires(world: World): void {
   for (const wire of world.wires) {
     const p = wire.points, last = p.length - 1;
     if (last < 2) continue;
+    const oldPositions = p.map(point => ({x: point.x, y: point.y}));
     const segment = Math.hypot(wire.bx - wire.ax, wire.by - wire.ay) * (1.34 - .335 * wire.tension) / last;
     p[0].x = wire.ax; p[0].y = wire.ay;
     p[last].x = wire.bx; p[last].y = wire.by;
@@ -39,6 +40,15 @@ export function stepWires(world: World): void {
         const bWeight = n + 1 === last ? 0 : n === 0 ? 1 : .5;
         a.x += dx * error * aWeight; a.y += dy * error * aWeight;
         b.x -= dx * error * bWeight; b.y -= dy * error * bWeight;
+      }
+      // Resolve intermediate point collisions against rigid cells and world bounds.
+      // This is a point-based approximation rather than a full thick-rope contact solver.
+      for (let n=1; n<last; n++) {
+        const q=p[n]; q.x=Math.max(0,Math.min(world.width-1,q.x)); q.y=Math.max(0,Math.min(world.height-1,q.y));
+        const x=Math.round(q.x), y=Math.round(q.y);
+        if (STATE_LUT[world.mat[world.idx(x,y)]] !== 1) continue;
+        const before=oldPositions[n], bx=Math.max(0,Math.min(world.width-1,Math.round(before.x))), by=Math.max(0,Math.min(world.height-1,Math.round(before.y)));
+        if (STATE_LUT[world.mat[world.idx(bx,by)]] !== 1) { q.x=before.x; q.y=before.y; q.oldX=q.x; q.oldY=q.y; }
       }
     }
   }

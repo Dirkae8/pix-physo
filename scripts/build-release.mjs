@@ -132,7 +132,7 @@ async function main() {
     'Вариант 3 (Любая ОС — Windows, macOS, Linux, Android):',
     '  Просто дважды откройте файл PIXPHYSO.html в любом современном браузере',
     '  (Chrome, Edge, Яндекс Браузер, Firefox, Brave, Safari).',
-    '  Весь движок, шейдеры, 121 предмет и вещество и текстуры уже вшиты внутрь одного файла!',
+    '  Весь движок, шейдеры, материалы и текстуры уже вшиты внутрь одного файла!',
     '',
     'УПРАВЛЕНИЕ:',
     '  • ЛКМ — рисовать выбранным материалом / нажимать Кнопки и Тумблеры на поле',
@@ -150,7 +150,7 @@ async function main() {
     '  • Диод, насос, клапан и вентилятор: направление выбирается стрелками до размещения',
     '',
   ].join('\r\n');
-  fs.writeFileSync(path.join(releaseDir, 'ИНСТРУКЦИЯ_ЗАПУСКА.txt'), readmeRu, 'utf8');
+  fs.writeFileSync(path.join(releaseDir, 'READ_ME_RU.txt'), readmeRu, 'utf8');
 
   // Create PIXPHYSO-Release.zip in repo root
   const zipPath = path.join(rootDir, 'PIXPHYSO-Release.zip');

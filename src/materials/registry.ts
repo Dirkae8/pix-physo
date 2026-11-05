@@ -161,6 +161,7 @@ export const MAT = {
   MOLTEN_COPPER: 141,
   MOLTEN_SILVER: 142,
   GAS_CYLINDER: 143,
+  GROUND: 144,
 } as const;
 
 export const MAX_MAT_ID = 160;
@@ -2637,6 +2638,7 @@ RAW_MATERIALS.push(
   {...clone(MAT.FAN), id: MAT.PUMP, key: 'pump', name: 'Жидкостный насос', shortDesc: 'Под напряжением переносит жидкость на соседнюю клетку в выбранном направлении.', selectable: true, category: 'electric', baseColor: [104,162,184]},
   {...clone(MAT.FAN), id: MAT.VALVE, key: 'valve', name: 'Обратный клапан', shortDesc: 'Пропускает жидкость только в выбранном направлении при перепаде давления.', selectable: true, category: 'electric', elecCond: 0, baseColor: [136,145,158]},
   {...clone(MAT.STEEL), id: MAT.GAS_CYLINDER, key: 'gas_cylinder', name: 'Баллон CO₂', shortDesc: 'Баллон с запасом сжатого CO₂; нажмите, чтобы открыть вентиль.', selectable: true, category: 'solids', baseColor: [130,145,151], meltTempC: undefined, meltInto: undefined},
+  {...clone(MAT.COPPER_WIRE), id: MAT.GROUND, key: 'ground', name: 'Возврат цепи', shortDesc: 'Общий обратный контакт источника; соединение с батареей создаёт ток и нагрев цепи.', selectable: true, category: 'electric', baseColor: [103,111,106]},
   {...clone(MAT.SWITCH), id: MAT.RELAY, key: 'relay', name: 'Реле', shortDesc: 'Силовая цепь вдоль стрелки замыкается напряжением на боковом контакте.', selectable: true, category: 'electric', baseColor: [154,158,153]},
   {...clone(MAT.COPPER_WIRE), id: MAT.ELECTROMAGNET, key: 'electromagnet', name: 'Электромагнит', shortDesc: 'Под напряжением притягивает железные опилки.', selectable: true, category: 'electric', baseColor: [167,104,74]},
   {...clone(MAT.FAN), id: MAT.COMPRESSOR, key: 'compressor', name: 'Компрессор', shortDesc: 'Под напряжением перемещает воздух и повышает давление на выходе.', selectable: true, category: 'electric', baseColor: [163,157,119]},
@@ -2688,4 +2690,16 @@ for (const m of RAW_MATERIALS) {
   TENSILE_LUT[m.id] = m.tensileStrength;
   POROSITY_LUT[m.id] = m.porosity;
   STATE_LUT[m.id] = STATE_CODE[m.state] ?? 0;
+}
+
+/** Approximate density change with temperature; the lattice cell size stays fixed. */
+export function densityAt(matId: number, tempC: number): number {
+  const base = DENSITY_LUT[matId];
+  if (STATE_LUT[matId] !== 3) return base;
+  const t = Math.max(-50, Math.min(300, tempC));
+  if (matId === MAT.WATER) {
+    // Water is densest near 4 °C; calibrated relative to its 20 °C catalogue density.
+    return base * Math.max(.82, Math.min(1.01, 1.001024 - .000004 * (t-4) * (t-4)));
+  }
+  return base * Math.max(.85, Math.min(1.05, 1 - .0003 * (t - 20)));
 }

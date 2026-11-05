@@ -3,6 +3,7 @@ import 'fake-indexeddb/auto';
 import { World } from '../src/engine/World';
 import { MAT } from '../src/materials/registry';
 import { makeWire } from '../src/engine/Wires';
+import { makeWheel, makeSpring } from '../src/engine/MechanicalSystem';
 import { saveWorld, loadWorld, saveTemplate, getTemplate, placeTemplate, listTemplates, deleteTemplate } from '../src/engine/WorldStore';
 
 describe('local world slots and reusable templates', () => {
@@ -19,18 +20,18 @@ describe('local world slots and reusable templates', () => {
     expect(await listTemplates()).toEqual([]);
   });
   it('round trips a full world including oxygen', async () => {
-    const a = new World(20,20); a.setCell(2,2,MAT.WATER,42); a.airOxygen[0]=.1; await saveWorld(a,'full');
+    const a = new World(20,20); a.setCell(2,2,MAT.WATER,42); a.airOxygen[0]=.1; a.waveHeight[3]=.42; a.waveVelocity[3]=.13; a.wheels.push(makeWheel('motor',3,3,4)); a.mechanicalSprings.push(makeSpring(3,4,3,8)); await saveWorld(a,'full');
     const b = new World(10,10); await loadWorld(b,'full');
-    expect(b.width).toBe(20); expect(b.airOxygen[0]).toBeCloseTo(.1); expect(b.mat[b.idx(2,2)]).toBe(MAT.WATER); expect(b.temp[b.idx(2,2)]).toBe(42);
+    expect(b.width).toBe(20); expect(b.wheels[0].kind).toBe('motor'); expect(b.mechanicalSprings).toHaveLength(1); expect(b.airOxygen[0]).toBeCloseTo(.1); expect(b.waveHeight[3]).toBeCloseTo(.42); expect(b.waveVelocity[3]).toBeCloseTo(.13); expect(b.mat[b.idx(2,2)]).toBe(MAT.WATER); expect(b.temp[b.idx(2,2)]).toBe(42);
   });
   it('copies a selected fragment with materials, cable and sensors and can be placed repeatedly', async () => {
-    const w = new World(30,30); w.setCell(3,4,MAT.BATTERY); w.setCell(7,4,MAT.LAMP); w.wires.push(makeWire(3,4,7,4,.5)); w.sensors.push({id:1,x:5,y:4});
+    const w = new World(30,30); w.setCell(3,4,MAT.BATTERY); w.setCell(7,4,MAT.LAMP); w.wires.push(makeWire(3,4,7,4,.5)); w.sensors.push({id:1,x:5,y:4}); w.wheels.push(makeWheel('gear',5,4,4)); w.mechanicalSprings.push(makeSpring(3,4,7,4));
     await saveTemplate(w,'lamp',[2,3],[8,5]); expect((await listTemplates()).map(s=>s.name)).toContain('lamp');
     const template = await getTemplate('lamp'), out = new World(40,40);
     placeTemplate(out,template,10,10); placeTemplate(out,template,20,20);
     expect(out.mat[out.idx(11,11)]).toBe(MAT.BATTERY); expect(out.mat[out.idx(15,11)]).toBe(MAT.LAMP);
-    expect(out.mat[out.idx(21,21)]).toBe(MAT.BATTERY); expect(out.wires).toHaveLength(2); expect(out.sensors).toHaveLength(2);
-    expect(out.popUndo()).toBe(true); expect(out.wires).toHaveLength(1);
+    expect(out.mat[out.idx(21,21)]).toBe(MAT.BATTERY); expect(out.wheels).toHaveLength(2); expect(out.mechanicalSprings).toHaveLength(2); expect(out.wires).toHaveLength(2); expect(out.sensors).toHaveLength(2);
+    expect(out.popUndo()).toBe(true); expect(out.wires).toHaveLength(1); expect(out.wheels).toHaveLength(1);
     await deleteTemplate('lamp'); expect((await listTemplates()).map(s=>s.name)).not.toContain('lamp');
   });
 });

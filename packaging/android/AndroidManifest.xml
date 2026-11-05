@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.pixphyso.app" android:versionCode="4" android:versionName="2.4">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.pixphyso.app" android:versionCode="5" android:versionName="2.5">
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="28" />
     <application android:label="PIXPHYSO" android:hardwareAccelerated="true" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden">

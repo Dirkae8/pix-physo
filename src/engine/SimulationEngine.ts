@@ -3,8 +3,11 @@ import { ELEC_COND_LUT, MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/regi
 import { AirSolver } from './AirSolver';
 import { ChemistrySolver } from './ChemistrySolver';
 import { DeviceSolver } from './DeviceSolver';
+import { CurrentSolver } from './CurrentSolver';
 import { ElectricSolver } from './ElectricSolver';
 import { MechanicsSolver } from './MechanicsSolver';
+import { stepMechanicalSystem } from './MechanicalSystem';
+import { SurfaceWaveSolver } from './SurfaceWaveSolver';
 import { ThermalSolver } from './ThermalSolver';
 import { stepWires } from './Wires';
 import { World, getResolutionDims } from './World';
@@ -16,6 +19,8 @@ export class SimulationEngine {
   public electricSolver: ElectricSolver;
   public chemistrySolver: ChemistrySolver;
   public deviceSolver: DeviceSolver;
+  public currentSolver: CurrentSolver;
+  public surfaceWaveSolver: SurfaceWaveSolver;
   public mechanicsSolver: MechanicsSolver;
 
   public paused = false;
@@ -30,6 +35,8 @@ export class SimulationEngine {
     this.electricSolver = new ElectricSolver(this.world.size);
     this.chemistrySolver = new ChemistrySolver();
     this.deviceSolver = new DeviceSolver();
+    this.currentSolver = new CurrentSolver();
+    this.surfaceWaveSolver = new SurfaceWaveSolver();
     this.mechanicsSolver = new MechanicsSolver(this.world.size);
   }
 
@@ -71,12 +78,15 @@ export class SimulationEngine {
       this.stepWeather();
       stepWires(this.world);
       this.airSolver.step(this.world, isBalance ? 4 : 2);
+      this.surfaceWaveSolver.step(this.world);
       this.thermalSolver.step(this.world);
       if (isBalance) this.thermalSolver.step(this.world);
       this.electricSolver.step(this.world, isBalance ? 8 : 5);
+      this.currentSolver.step(this.world);
       this.deviceSolver.step(this.world);
       this.chemistrySolver.step(this.world);
       for (let s = 0; s < mechSubsteps; s++) this.mechanicsSolver.step(this.world, s === 0);
+      stepMechanicalSystem(this.world);
     }
     if (forceSingleStep) this.stepAccumulator = 0;
 

@@ -28,6 +28,7 @@ export class ElectricSolver {
   }
 
   private effectiveConductivity(matId: number, metaVal: number): number {
+    if (matId === MAT.GROUND) return 0;
     if (matId === MAT.RELAY) return (metaVal & 4) ? 0.96 : 0;
     if (matId === MAT.SWITCH || matId === MAT.BUTTON || matId === MAT.THERMOSTAT || matId === MAT.PRESSURE_SWITCH || matId === MAT.FUSE) {
       return metaVal > 0 ? 0.96 : 0;
