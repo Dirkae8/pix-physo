@@ -1,0 +1,16 @@
+version: 2.9.3
+apkFileName: PIXPHYSO.apk
+isFrameworkApk: false
+usesFramework:
+  ids:
+  - 1
+sdkInfo:
+  minSdkVersion: 23
+  targetSdkVersion: 28
+packageInfo:
+  forcedPackageId: 127
+versionInfo:
+  versionCode: 5
+  versionName: '2.5'
+doNotCompress:
+- resources.arsc
