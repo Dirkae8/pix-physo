@@ -2,7 +2,7 @@ import { SoundEngine } from '../audio/SoundEngine';
 import { DEMO_SCENES } from '../engine/Demos';
 import { SimulationEngine } from '../engine/SimulationEngine';
 import { makeWire } from '../engine/Wires';
-import { deleteWorld, listWorlds, loadWorld, saveWorld } from '../engine/WorldStore';
+import { deleteWorld, listWorlds, loadWorld, saveWorld, saveTemplate, listTemplates, getTemplate, deleteTemplate, placeTemplate, type Template } from '../engine/WorldStore';
 import { ELEC_COND_LUT } from '../materials/registry';
 import { ThermalSolver } from '../engine/ThermalSolver';
 import { GpuPipeline } from '../gpu/GpuPipeline';
@@ -80,7 +80,9 @@ export class AppUI {
   private zoom = 1;
   private panX = 0;
   private panY = 0;
-  private editMode: 'paint' | 'fill' | 'pick' | 'ruler' | 'rectangle' | 'ellipse' = 'paint';
+  private editMode: 'paint' | 'fill' | 'pick' | 'ruler' | 'rectangle' | 'ellipse' | 'template' = 'paint';
+  private templateRegion: [[number, number], [number, number]] | null = null;
+  private placingTemplate: Template | null = null;
   private measureStart: [number, number] | null = null;
   private wireMode = false;
   private wireStart: [number, number] | null = null;
@@ -250,7 +252,8 @@ export class AppUI {
             </div>
 
             <div class="panel-section">
-              <div class="section-title">Погода</div>
+              <div class="section-title">Погода и скорость</div>
+              <label class="toggle-row"><span>Скорость симуляции</span><select class="dark-select" id="selMobileSpeed" style="width:85px"><option value="0.25">0,25×</option><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
               <label class="toggle-row"><span>Осадки: дождь / снег по температуре</span><input type="checkbox" id="chkPrecipitation" /></label>
               <label class="toggle-row"><span>Гроза (при осадках)</span><input type="checkbox" id="chkStorm" /></label>
               <div class="sub-hint">Осадки появляются при открытом небе.</div>
@@ -259,6 +262,7 @@ export class AppUI {
             <!-- DISPLAY FILTER & BOUNDARIES -->
             <div class="panel-section">
               <div class="section-title">Отображение и края</div>
+              <div class="ctrl-row"><div class="ctrl-label"><span>Размер мира (изменение очищает поле)</span></div><select class="dark-select" id="selWorldSize"><option value="standard">480×270</option><option value="high">576×324</option><option value="ultra">680×382</option><option value="large">960×540</option></select></div>
               <div class="ctrl-row">
                 <div class="ctrl-label"><span>Научный режим камеры</span></div>
                 <select class="dark-select" id="selDisplayMode">
@@ -322,6 +326,7 @@ export class AppUI {
               <button class="mini-btn" data-edit="ruler">Линейка</button>
               <button class="mini-btn" data-edit="rectangle">Прямоугольник</button>
               <button class="mini-btn" data-edit="ellipse">Эллипс</button>
+              <button class="mini-btn" data-edit="template" title="Выделить прямоугольную область для сохранения">Выделить схему</button>
               <button class="mini-btn" id="btnZoomReset">Масштаб 1×</button>
               <button class="mini-btn" id="btnWire" title="Две точки на проводниках">Кабель</button>
               <label class="brush-inline" title="Натяжение нового кабеля">Натяжение <input id="rngWire" type="range" min="0" max="100" value="50" style="width:70px" /></label>
@@ -352,11 +357,12 @@ export class AppUI {
               </label>
 
               <div class="brush-inline" id="fanDirBar" style="display:none;">
-                <span style="color:#ffffff;font-weight:700;">Поток вентилятора:</span>
+                <span style="color:#ffffff;font-weight:700;">Направление:</span>
                 <button class="mini-btn active" data-fandir="0">→</button>
                 <button class="mini-btn" data-fandir="1">↓</button>
                 <button class="mini-btn" data-fandir="2">←</button>
                 <button class="mini-btn" data-fandir="3">↑</button>
+                <label title="Мощность новых вентиляторов">Мощность <input id="rngFanPower" type="range" min="10" max="100" value="100" style="width:70px" /></label>
               </div>
 
               <div class="selected-mat-banner" id="selectedBanner"></div>
@@ -372,10 +378,10 @@ export class AppUI {
       <div class="modal-backdrop hidden" id="worldsModal">
         <div class="modal-window" style="max-width:520px">
           <div class="modal-header"><div class="modal-title">Миры и схемы</div><button class="btn" id="btnCloseWorlds">✕ Закрыть</button></div>
-          <div class="sub-hint">Сохранения хранятся локально в данных приложения. Схема сохраняется вместе со всем миром.</div>
-          <div style="display:flex;gap:6px;margin:12px 0"><input id="worldName" maxlength="60" placeholder="Имя сохранения" style="flex:1;min-width:0" /><button class="btn" id="btnSaveWorld">Сохранить</button></div>
-          <div id="worldMessage" class="sub-hint"></div><div id="worldList" style="display:flex;flex-direction:column;gap:6px;max-height:45vh;overflow:auto"></div>
-          <div class="sub-hint" style="margin-top:12px">Кратко: выбери материал и рисуй. Среда управляет температурой и ветром. Кабель: нажми на два проводника.</div>
+          <div class="sub-hint">Сохранения и схемы хранятся локально в данных приложения. Чтобы выделить схему, выберите «Выделить схему» и проведите по полю.</div>
+          <div style="display:flex;gap:6px;margin:12px 0"><input id="worldName" maxlength="60" placeholder="Имя сохранения" style="flex:1;min-width:0" /><button class="btn" id="btnSaveWorld">Мир</button><button class="btn" id="btnSaveTemplate">Схему</button></div>
+          <div id="worldMessage" class="sub-hint"></div><div id="worldList" style="display:flex;flex-direction:column;gap:6px;max-height:25vh;overflow:auto"></div>
+          <details style="margin-top:12px"><summary>Краткая справка и задания</summary><div class="sub-hint">Кабель: нажми две точки на проводниках. Диод, насос и клапан используют выбранное направление. Насосу и вентилятору нужно питание. Кислота + щёлочь → соль и тепло; сухой лёд → CO₂. Тепловизор и давление включаются в панели среды.</div><div id="guideMaterial" class="sub-hint"></div><div id="challengeList" class="sub-hint"></div></details>
         </div>
       </div>
 
@@ -636,7 +642,7 @@ export class AppUI {
 
   private selectMaterial(matId: number): void {
     this.selectedMatId = matId;
-    this.fanDirBarEl.style.display = matId === MAT.FAN ? 'flex' : 'none';
+    this.fanDirBarEl.style.display = [MAT.FAN, MAT.PUMP, MAT.VALVE, MAT.DIODE, MAT.RELAY, MAT.COMPRESSOR, MAT.VACUUM_PUMP].some(id => id === matId) ? 'flex' : 'none';
     this.renderItemsStrip();
   }
 
@@ -731,9 +737,15 @@ export class AppUI {
     this.root.querySelectorAll<HTMLButtonElement>('#speedBar .speed-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.engine.speedMultiplier = Number(btn.dataset.spd || '1');
+        (this.root.querySelector('#selMobileSpeed') as HTMLSelectElement).value = String(this.engine.speedMultiplier);
         this.root.querySelectorAll('#speedBar .speed-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
       });
+    });
+
+    this.root.querySelector('#selMobileSpeed')!.addEventListener('change', e => {
+      const value = Number((e.target as HTMLSelectElement).value); this.engine.speedMultiplier = value;
+      this.root.querySelectorAll<HTMLButtonElement>('#speedBar .speed-btn').forEach(b => b.classList.toggle('active', Number(b.dataset.spd) === value));
     });
 
     this.root.querySelector('#btnUndo')!.addEventListener('click', () => {
@@ -745,7 +757,7 @@ export class AppUI {
     });
 
     this.root.querySelectorAll<HTMLButtonElement>('[data-edit]').forEach(button => button.addEventListener('click', () => {
-      this.editMode = button.dataset.edit as typeof this.editMode; this.measureStart = null; this.wireMode = false; this.wireStart = null;
+      this.editMode = button.dataset.edit as typeof this.editMode; this.measureStart = null; this.placingTemplate = null; this.wireMode = false; this.wireStart = null;
       this.root.querySelector('#btnWire')!.classList.remove('active');
       this.root.querySelectorAll('[data-edit]').forEach(b => b.classList.remove('active')); button.classList.add('active');
     }));
@@ -779,6 +791,22 @@ export class AppUI {
           del.onclick = async () => { if (!window.confirm('Удалить сохранение «' + save.name + '»?')) return; try { await deleteWorld(save.name); await refresh(); } catch (e) { message.textContent = 'Ошибка удаления: ' + String(e); } };
           row.append(label, load, del); list.appendChild(row);
         }
+        const templates = await listTemplates();
+        for (const entry of templates) {
+          const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:6px';
+          const label = document.createElement('span'); label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis'; label.textContent = 'Схема: ' + entry.name;
+          const insert = document.createElement('button'); insert.className = 'btn'; insert.textContent = 'Вставить';
+          insert.onclick = async () => { try { this.placingTemplate = await getTemplate(entry.name); this.wireMode = false; this.editMode = 'paint'; modal.classList.add('hidden'); (this.root.querySelector('#btnWorlds') as HTMLElement).textContent = 'Укажи место'; } catch(e) { message.textContent = 'Ошибка схемы: ' + String(e); } };
+          const del = document.createElement('button'); del.className = 'btn'; del.textContent = '×'; del.title = 'Удалить схему';
+          del.onclick = async () => { if (!window.confirm('Удалить схему «' + entry.name + '»?')) return; try { await deleteTemplate(entry.name); await refresh(); } catch(e) { message.textContent = 'Ошибка удаления: ' + String(e); } };
+          row.append(label, insert, del); list.appendChild(row);
+        }
+        if (templates.length) message.textContent = '';
+        const selected = MATERIAL_BY_ID[this.selectedMatId];
+        this.root.querySelector('#guideMaterial')!.textContent = `Выбрано: ${selected.name}. ${selected.shortDesc}`;
+        const world = this.engine.world; let water = false, lamp = false, hot = false;
+        for (let i=0; i<world.size; i++) { water ||= world.mat[i] === MAT.WATER; lamp ||= world.mat[i] === MAT.LAMP && world.volt[i] > 4; hot ||= world.temp[i] > 100; if (water && lamp && hot) break; }
+        this.root.querySelector('#challengeList')!.textContent = `Задания сейчас: ${water ? '☑' : '□'} разместить воду · ${lamp ? '☑' : '□'} зажечь лампу · ${hot ? '☑' : '□'} нагреть вещество выше 100 °C`;
       } catch (e) { message.textContent = 'Хранилище недоступно: ' + String(e); }
     };
     this.root.querySelector('#btnWorlds')!.addEventListener('click', () => { modal.classList.remove('hidden'); void refresh(); });
@@ -788,6 +816,15 @@ export class AppUI {
       if (!name) { message.textContent = 'Введите имя сохранения.'; return; }
       try { const existing = await listWorlds(); if (existing.some(s => s.name === name) && !window.confirm('Перезаписать «' + name + '»?')) return; await saveWorld(this.engine.world, name); await refresh(); message.textContent = 'Сохранено.'; }
       catch (e) { message.textContent = 'Ошибка сохранения: ' + String(e); }
+    });
+
+    this.root.querySelector('#btnSaveTemplate')!.addEventListener('click', async () => {
+      const name = (this.root.querySelector('#worldName') as HTMLInputElement).value.trim();
+      if (!name) { message.textContent = 'Введите имя схемы.'; return; }
+      if (!this.templateRegion) { message.textContent = 'Сначала выделите область кнопкой «Выделить схему».'; return; }
+      try { const existing = await listTemplates(); if (existing.some(s => s.name === name) && !window.confirm('Перезаписать схему «' + name + '»?')) return;
+        await saveTemplate(this.engine.world, name, this.templateRegion[0], this.templateRegion[1]); this.templateRegion = null; await refresh(); message.textContent = 'Схема сохранена.';
+      } catch (e) { message.textContent = 'Ошибка сохранения схемы: ' + String(e); }
     });
 
     // Environment Presets & Sliders
@@ -913,6 +950,8 @@ export class AppUI {
       });
     });
 
+    this.root.querySelector('#rngFanPower')!.addEventListener('input', e => { this.engine.world.activeFanPower = Number((e.target as HTMLInputElement).value) / 100; });
+
     // Game Settings Modal
     const openSettings = () => {
       this.root.querySelector('#gpuHardwareInfo')!.textContent = `Активный графический ускоритель: ${this.gpu.rendererName}`;
@@ -935,12 +974,14 @@ export class AppUI {
       });
     });
 
-    this.root.querySelector('#selResolution')!.addEventListener('change', (e) => {
-      this.settings.resolutionPreset = (e.target as HTMLSelectElement).value as GameSettings['resolutionPreset'];
-      if (this.engine.applySettings(this.settings)) {
-        this.fitCanvasViewport();
-        DEMO_SCENES[0].build(this.engine.world);
+    for (const id of ['selResolution', 'selWorldSize']) this.root.querySelector('#' + id)!.addEventListener('change', e => {
+      const chosen = (e.target as HTMLSelectElement).value as GameSettings['resolutionPreset'];
+      if (!window.confirm('Изменение размера очистит текущий мир. Продолжить?')) {
+        (e.target as HTMLSelectElement).value = this.settings.resolutionPreset; return;
       }
+      this.settings.resolutionPreset = chosen;
+      for (const selector of ['selResolution','selWorldSize']) (this.root.querySelector('#' + selector) as HTMLSelectElement).value = chosen;
+      if (this.engine.applySettings(this.settings)) { this.fitCanvasViewport(); DEMO_SCENES[0].build(this.engine.world); }
     });
 
     this.root.querySelector('#rngSubsteps')!.addEventListener('input', (e) => {
@@ -1071,6 +1112,10 @@ export class AppUI {
       this.pointerInteractedSwitch = false;
       if (e.pointerType !== 'touch') this.canvasFrame.setPointerCapture(e.pointerId);
 
+      if (this.placingTemplate && !this.pointerErase) {
+        placeTemplate(this.engine.world, this.placingTemplate, sx, sy); this.placingTemplate = null;
+        (this.root.querySelector('#btnWorlds') as HTMLElement).textContent = 'Миры'; this.pointerInteractedSwitch = true; return;
+      }
       if (this.wireMode && !this.pointerErase) {
         this.pointerInteractedSwitch = true;
         if (ELEC_COND_LUT[this.engine.world.mat[sy * this.engine.world.width + sx]] <= 0) { this.probeEl.textContent = 'Точка кабеля должна быть на проводнике.'; return; }
@@ -1110,7 +1155,7 @@ export class AppUI {
           }
           return;
         }
-        this.lineStartX = sx; this.lineStartY = sy; world.pushUndo(); return;
+        this.lineStartX = sx; this.lineStartY = sy; if (this.editMode !== 'template') world.pushUndo(); return;
       }
       if (!this.pointerErase && this.selectedMatId === MAT.TOOL_SENSOR) {
         const pins = this.engine.world.sensors;
@@ -1126,6 +1171,7 @@ export class AppUI {
         this.selectedMatId !== MAT.TOOL_ERASER &&
         this.selectedMatId !== MAT.SWITCH &&
         this.selectedMatId !== MAT.BUTTON &&
+        this.selectedMatId !== MAT.GAS_CYLINDER &&
         !this.replaceMode
       ) {
         if (this.engine.world.interactClickAt(sx, sy)) {
@@ -1166,7 +1212,7 @@ export class AppUI {
       this.pointerSimY = sy;
 
       if (!this.pointerDown || this.pointerInteractedSwitch) return;
-      if (this.editMode === 'rectangle' || this.editMode === 'ellipse') return;
+      if (this.editMode === 'rectangle' || this.editMode === 'ellipse' || this.editMode === 'template') return;
 
       if (!this.pointerErase && this.selectedMatId === MAT.TOOL_HAND) {
         this.engine.moveHandGrab(sx, sy);
@@ -1194,6 +1240,11 @@ export class AppUI {
 
     const finishPointer = () => {
       if (!this.pointerDown) return;
+      if (!this.pointerErase && !this.pointerInteractedSwitch && this.editMode === 'template' && this.lineStartX >= 0) {
+        this.templateRegion = [[this.lineStartX,this.lineStartY], [this.pointerSimX,this.pointerSimY]];
+        (this.root.querySelector('#btnWorlds') as HTMLElement).click();
+        (this.root.querySelector('#worldMessage') as HTMLElement).textContent = 'Область выделена — введите имя и нажмите «Схему».';
+      }
       if (!this.pointerErase && !this.pointerInteractedSwitch && (this.editMode === 'rectangle' || this.editMode === 'ellipse') && this.lineStartX >= 0 && MATERIAL_BY_ID[this.selectedMatId].state !== 'tool') {
         const world = this.engine.world, x0 = Math.min(this.lineStartX, this.pointerSimX), x1 = Math.max(this.lineStartX, this.pointerSimX), y0 = Math.min(this.lineStartY, this.pointerSimY), y1 = Math.max(this.lineStartY, this.pointerSimY);
         const cx = (x0+x1)/2, cy = (y0+y1)/2, rx = Math.max(.5,(x1-x0+1)/2), ry = Math.max(.5,(y1-y0+1)/2);
@@ -1295,7 +1346,7 @@ export class AppUI {
       } else if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
         e.preventDefault();
         this.engine.world.popUndo();
-      } else if (e.code === 'KeyR' && this.selectedMatId === MAT.FAN) {
+      } else if (e.code === 'KeyR' && [MAT.FAN, MAT.PUMP, MAT.VALVE, MAT.DIODE, MAT.RELAY, MAT.COMPRESSOR, MAT.VACUUM_PUMP].some(id => id === this.selectedMatId)) {
         this.engine.world.activeFanDir = ((this.engine.world.activeFanDir + 1) & 3) as FanDirection;
         this.root.querySelectorAll<HTMLButtonElement>('#fanDirBar [data-fandir]').forEach((b) => {
           b.classList.toggle('active', Number(b.dataset.fandir) === this.engine.world.activeFanDir);
@@ -1380,6 +1431,14 @@ export class AppUI {
       }
     }
 
+    if (this.pointerDown && this.lineStartX >= 0 && ['rectangle','ellipse','template'].includes(this.editMode)) {
+      const x = (Math.min(this.lineStartX,this.pointerSimX)+.5)*scaleX, y=(Math.min(this.lineStartY,this.pointerSimY)+.5)*scaleY;
+      const w = (Math.abs(this.pointerSimX-this.lineStartX)+1)*scaleX, h=(Math.abs(this.pointerSimY-this.lineStartY)+1)*scaleY;
+      ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.setLineDash([4,3]); ctx.beginPath();
+      if (this.editMode === 'ellipse') ctx.ellipse(x+w/2,y+h/2,Math.max(.5,w/2),Math.max(.5,h/2),0,0,Math.PI*2); else ctx.rect(x,y,w,h);
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+
     // 3. Straight Line Tool Preview
     if (this.pointerDown && (this.brushShape === 'line' || this.shiftHeld) && this.lineStartX >= 0) {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
@@ -1395,7 +1454,7 @@ export class AppUI {
     // penalising overlaps with other callouts and keeping rectangles inside the viewport.
     const boxes: {x: number; y: number; w: number; h: number}[] = [];
     for (const pin of world.sensors) {
-      const bw = Math.min(205, cw * 0.7), bh = 90;
+      const bw = Math.min(205, cw * 0.7), bh = 105;
       const px = (pin.x + 0.5) * scaleX, py = (pin.y + 0.5) * scaleY;
       let best = { x: 0, y: 0, w: bw, h: bh }, bestScore = -Infinity;
       for (const distance of [24, 65, 115]) for (let k = 0; k < 8; k++) {
@@ -1423,7 +1482,7 @@ export class AppUI {
       ctx.moveTo(px, py); ctx.lineTo(px - 7 * Math.cos(angle + .45), py - 7 * Math.sin(angle + .45)); ctx.stroke();
       ctx.fillStyle = '#000'; ctx.fillRect(best.x, best.y, bw, bh); ctx.strokeRect(best.x, best.y, bw, bh);
       ctx.fillStyle = '#fff'; ctx.font = '11px Roboto Mono, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-      const rows = [`[${pin.x}, ${pin.y}] ${pr.matName}`, `T: ${pr.tempC.toFixed(1)} °C`, `P: ${pr.pressureKPa.toFixed(1)} кПа`, `U: ${pr.voltage.toFixed(1)} В`, `ρ: ${pr.density} кг/м³`];
+      const rows = [`[${pin.x}, ${pin.y}] ${pr.matName}`, `T: ${pr.tempC.toFixed(1)} °C`, `P: ${pr.pressureKPa.toFixed(1)} кПа`, `U: ${pr.voltage.toFixed(1)} В`, `O₂: ${(pr.oxygenFraction*100).toFixed(1)} %`, `ρ: ${pr.density} кг/м³`];
       rows.forEach((row, i) => ctx.fillText(row, best.x + 5, best.y + 15 + i * 15, bw - 10));
     }
 
@@ -1463,7 +1522,7 @@ export class AppUI {
       const pr = this.engine.world.probeAt(this.pointerSimX, this.pointerSimY);
       const tempK = Math.max(0, pr.tempC + 273.15);
       const windMag = Math.hypot(pr.windVx, pr.windVy);
-      this.probeEl.textContent = `[${pr.x}, ${pr.y}] ${pr.matName} · T: ${pr.tempC.toFixed(1)} °C (${Math.round(tempK)} K) · P: ${pr.pressureKPa.toFixed(1)} кПа · Ветер: ${windMag.toFixed(1)} м/с · U: ${pr.voltage.toFixed(1)} В · ρ: ${pr.density} кг/м³`;
+      this.probeEl.textContent = `[${pr.x}, ${pr.y}] ${pr.matName} · T: ${pr.tempC.toFixed(1)} °C (${Math.round(tempK)} K) · P: ${pr.pressureKPa.toFixed(1)} кПа · Ветер: ${windMag.toFixed(1)} м/с · O₂: ${(pr.oxygenFraction*100).toFixed(1)} % · U: ${pr.voltage.toFixed(1)} В · ρ: ${pr.density} кг/м³`;
     }
   }
 

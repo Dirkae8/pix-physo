@@ -91,6 +91,8 @@ export const PRESET_HOME: Omit<EnvironmentConfig, 'preset' | 'lastBasePreset'> =
 
 export function getResolutionDims(preset: GameSettings['resolutionPreset']): [number, number] {
   switch (preset) {
+    case 'large':
+      return [960, 540];
     case 'ultra':
       return [680, 382];
     case 'high':
@@ -129,7 +131,8 @@ export class World {
   // Continuum Air arrays (synced with GPU Navier-Stokes pipeline)
   public airPressure!: Float32Array; // Delta kPa relative to env.pressureKPa
   public airVx!: Float32Array;       // m/s
-  public airVy!: Float32Array;       // m/s
+  public airVy!: Float32Array;
+  public airOxygen!: Float32Array;  // local oxygen fraction of air, 0..0.21       // m/s
   public airWall!: Uint8Array;       // 1 if blocked by solid cell
 
   // Packed RGBA8 texture buffer uploaded to GPU every frame for ultra-fast shader access:
@@ -142,6 +145,7 @@ export class World {
   public stepTick = 1;
   public timeSec = 0;
   public activeFanDir: FanDirection = 0;
+  public activeFanPower = 1;
 
   public env: EnvironmentConfig = {
     preset: 'street',
@@ -204,6 +208,8 @@ export class World {
     this.airPressure = new Float32Array(this.airSize);
     this.airVx = new Float32Array(this.airSize);
     this.airVy = new Float32Array(this.airSize);
+    this.airOxygen = new Float32Array(this.airSize);
+    this.airOxygen.fill(.21);
     this.airWall = new Uint8Array(this.airSize);
 
     this.gpuStateTexA = new Uint8Array(n * 4);
@@ -279,6 +285,7 @@ export class World {
     this.airPressure.fill(0);
     this.airVx.fill(0);
     this.airVy.fill(0);
+    this.airOxygen.fill(.21);
     this.airWall.fill(0);
     for (let i = 0; i < this.size; i++) {
       this.seed[i] = this.randByte();
@@ -367,11 +374,15 @@ export class World {
     this.stress[i] = 0;
     this.seed[i] = this.randByte();
 
-    if (matId === MAT.BATTERY) {
+    if (matId === MAT.GAS_CYLINDER) {
+      this.meta[i] = 127; // seven-bit compressed gas charge; high bit is the valve.
+    } else if (matId === MAT.BATTERY) {
       this.meta[i] = 240; // 96% charged
-    } else if (matId === MAT.SWITCH) {
+    } else if (matId === MAT.SWITCH || matId === MAT.FUSE) {
       this.meta[i] = 1; // Default ON when placed; click toggles ON/OFF
     } else if (matId === MAT.FAN) {
+      this.meta[i] = this.activeFanDir | (Math.max(1, Math.min(63, Math.round(this.activeFanPower * 63))) << 2);
+    } else if (matId === MAT.DIODE || matId === MAT.PUMP || matId === MAT.VALVE || matId === MAT.RELAY || matId === MAT.COMPRESSOR || matId === MAT.VACUUM_PUMP) {
       this.meta[i] = this.activeFanDir;
     } else if (matId === MAT.NEUTRON) {
       const ang = this.rand() * Math.PI * 2;
@@ -522,6 +533,14 @@ export class World {
   }
 
   public interactClickAt(cx: number, cy: number): boolean {
+    // A cylinder's valve is switched by clicking directly on the cylinder.
+    if (this.inBounds(cx, cy) && this.mat[cy*this.width+cx] === MAT.GAS_CYLINDER) {
+      const open = (this.meta[cy*this.width+cx] & 128) === 0;
+      for (let y=Math.max(0,cy-14); y<=Math.min(this.height-1,cy+14); y++) for (let x=Math.max(0,cx-14); x<=Math.min(this.width-1,cx+14); x++) {
+        const j=y*this.width+x; if (this.mat[j] === MAT.GAS_CYLINDER) this.meta[j] = (this.meta[j]&127) | (open ? 128 : 0);
+      }
+      return true;
+    }
     // Check small 5px radius around click for interactive Buttons or Switches!
     let toggledSwitch = false;
     let targetSwitchVal = 0;
@@ -605,6 +624,7 @@ export class World {
         pressureKPa: this.env.pressureKPa,
         windVx: 0,
         windVy: 0,
+        oxygenFraction: 0,
         voltage: 0,
         charge: 0,
         stress: 0,
@@ -622,6 +642,8 @@ export class World {
       name += this.meta[i] > 0 ? ' [ЗАЖАТА]' : ' [ОТЖАТА]';
     } else if (m === MAT.BATTERY) {
       name += ` [${Math.round((this.meta[i] / 250) * 100)}%]`;
+    } else if (m === MAT.GAS_CYLINDER) {
+      name += ` [${Math.round((this.meta[i]&127)/127*100)}%, ${(this.meta[i]&128) ? 'открыт' : 'закрыт'}]`;
     } else if (m === MAT.FAN) {
       const arrows = ['→', '↓', '←', '↑'];
       name += ` [${arrows[this.meta[i] & 3]}]`;
@@ -639,6 +661,7 @@ export class World {
       pressureKPa: Math.max(0, this.env.pressureKPa + this.airPressure[ai]),
       windVx: this.airVx[ai],
       windVy: this.airVy[ai],
+      oxygenFraction: this.airOxygen[ai],
       voltage: this.volt[i],
       charge: this.current[i],
       stress: this.stress[i],

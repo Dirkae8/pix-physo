@@ -135,9 +135,35 @@ export const MAT = {
   TOOL_CRYO: 115,
   TOOL_IGNITE: 116,
   ETHANOL_VAPOR: 117,
+  MOLTEN_ALUMINUM: 118,
+  MOLTEN_GOLD: 119,
+  MOLTEN_LEAD: 120,
+  MOLTEN_TITANIUM: 121,
+  MOLTEN_IRON: 122,
+  DRY_ICE: 123,
+  ALKALI: 124,
+  FROST: 125,
+  RUST: 126,
+  CAPACITOR: 127,
+  DIODE: 128,
+  FUSE: 129,
+  THERMOSTAT: 130,
+  PRESSURE_SWITCH: 131,
+  PUMP: 132,
+  VALVE: 133,
+  TOOL_EXTINGUISHER: 134,
+  WATER_VAPOR: 135,
+  RELAY: 136,
+  ELECTROMAGNET: 137,
+  COMPRESSOR: 138,
+  VACUUM_PUMP: 139,
+  SOOT: 140,
+  MOLTEN_COPPER: 141,
+  MOLTEN_SILVER: 142,
+  GAS_CYLINDER: 143,
 } as const;
 
-export const MAX_MAT_ID = 128;
+export const MAX_MAT_ID = 160;
 
 export interface CategoryMeta {
   id: CategoryId;
@@ -2577,6 +2603,47 @@ RAW_MATERIALS.push(
   { ...RAW_MATERIALS.find(m => m.id === MAT.TOOL_WIND)!, id: MAT.TOOL_MIXER, key: 'tool_mixer', name: 'Смеситель', shortDesc: 'Инструмент воздействия на выбранную область.', category: 'tools', selectable: true, density: 0, baseColor: [112, 220, 185] },
   { ...RAW_MATERIALS.find(m => m.id === MAT.TOOL_COOL)!, id: MAT.TOOL_CRYO, key: 'tool_cryo', name: 'Криоимпульс', shortDesc: 'Инструмент воздействия на выбранную область.', category: 'tools', selectable: true, density: 0, baseColor: [118, 218, 255] },
   { ...RAW_MATERIALS.find(m => m.id === MAT.TOOL_HEAT)!, id: MAT.TOOL_IGNITE, key: 'tool_ignite', name: 'Поджиг', shortDesc: 'Инструмент воздействия на выбранную область.', category: 'tools', selectable: true, density: 0, baseColor: [244, 86, 30] },
+);
+
+// Each molten metal retains its identity and freezes back into its source material.
+const metalMelt = RAW_MATERIALS.find(m => m.id === MAT.MOLTEN_METAL)!;
+for (const [solid, liquid, label, melt, density] of [
+  [MAT.ALUMINUM, MAT.MOLTEN_ALUMINUM, 'алюминия', 660, 2375],
+  [MAT.GOLD, MAT.MOLTEN_GOLD, 'золота', 1064, 17300],
+  [MAT.LEAD, MAT.MOLTEN_LEAD, 'свинца', 327, 10660],
+  [MAT.TITANIUM, MAT.MOLTEN_TITANIUM, 'титана', 1668, 4110],
+  [MAT.IRON_FILINGS, MAT.MOLTEN_IRON, 'железа', 1538, 7000],
+  [MAT.COPPER_WIRE, MAT.MOLTEN_COPPER, 'меди', 1085, 8020],
+  [MAT.SILVER_WIRE, MAT.MOLTEN_SILVER, 'серебра', 962, 9300],
+] as const) {
+  const source = RAW_MATERIALS.find(m => m.id === solid)!;
+  source.meltInto = liquid;
+  source.meltTempC = melt;
+  RAW_MATERIALS.push({...metalMelt, id: liquid, key: `molten_${source.key}`, name: `Расплав ${label}`, shortDesc: `При охлаждении застывает обратно в ${source.name}.`,
+    defaultTempC: melt + 100, freezeTempC: melt - 10, freezeInto: solid, density});
+}
+const clone = (id: number) => RAW_MATERIALS.find(m => m.id === id)!;
+clone(MAT.ALUMINUM_WIRE).meltInto = MAT.MOLTEN_ALUMINUM; clone(MAT.ALUMINUM_WIRE).meltTempC = 660;
+RAW_MATERIALS.push(
+  {...clone(MAT.ICE), id: MAT.DRY_ICE, key: 'dry_ice', name: 'Сухой лёд', shortDesc: 'Медленно сублимирует в углекислый газ при нагреве выше −78 °C.', selectable: true, category: 'solids', density: 1560, defaultTempC: -80, meltTempC: undefined, meltInto: undefined, baseColor: [220,230,230]},
+  {...clone(MAT.WATER), id: MAT.ALKALI, key: 'alkali', name: 'Щёлочь', shortDesc: 'Щелочной раствор нейтрализует кислоту с выделением тепла.', selectable: true, category: 'liquids', density: 1050, baseColor: [175,200,196], boilTempC: 105},
+  {...clone(MAT.SNOW), id: MAT.FROST, key: 'frost', name: 'Иней', shortDesc: 'Появляется на холодной поверхности и тает при нагреве.', selectable: false, state: 'solid', defaultTempC: -5, baseColor: [220,238,244]},
+  {...clone(MAT.SAND), id: MAT.RUST, key: 'rust', name: 'Ржавчина', shortDesc: 'Медленный продукт окисления железа и стали при влажности.', selectable: false, density: 5200, baseColor: [137,73,40]},
+  {...clone(MAT.COPPER_WIRE), id: MAT.CAPACITOR, key: 'capacitor', name: 'Конденсатор', shortDesc: 'Запасает заряд и постепенно разряжается после отключения питания.', selectable: true, category: 'electric', baseColor: [151,172,174]},
+  {...clone(MAT.COPPER_WIRE), id: MAT.DIODE, key: 'diode', name: 'Диод', shortDesc: 'Пропускает напряжение только в выбранном направлении.', selectable: true, category: 'electric', baseColor: [80,80,85]},
+  {...clone(MAT.COPPER_WIRE), id: MAT.FUSE, key: 'fuse', name: 'Предохранитель', shortDesc: 'Разрывает цепь при сильном перегреве.', selectable: true, category: 'electric', baseColor: [220,211,175]},
+  {...clone(MAT.SWITCH), id: MAT.THERMOSTAT, key: 'thermostat', name: 'Термодатчик', shortDesc: 'Замыкает цепь при температуре от 60 °C.', selectable: true, category: 'electric', baseColor: [200,115,115]},
+  {...clone(MAT.SWITCH), id: MAT.PRESSURE_SWITCH, key: 'pressure_switch', name: 'Датчик давления', shortDesc: 'Замыкает цепь при давлении от 120 кПа.', selectable: true, category: 'electric', baseColor: [155,180,195]},
+  {...clone(MAT.FAN), id: MAT.PUMP, key: 'pump', name: 'Жидкостный насос', shortDesc: 'Под напряжением переносит жидкость на соседнюю клетку в выбранном направлении.', selectable: true, category: 'electric', baseColor: [104,162,184]},
+  {...clone(MAT.FAN), id: MAT.VALVE, key: 'valve', name: 'Обратный клапан', shortDesc: 'Пропускает жидкость только в выбранном направлении при перепаде давления.', selectable: true, category: 'electric', elecCond: 0, baseColor: [136,145,158]},
+  {...clone(MAT.STEEL), id: MAT.GAS_CYLINDER, key: 'gas_cylinder', name: 'Баллон CO₂', shortDesc: 'Баллон с запасом сжатого CO₂; нажмите, чтобы открыть вентиль.', selectable: true, category: 'solids', baseColor: [130,145,151], meltTempC: undefined, meltInto: undefined},
+  {...clone(MAT.SWITCH), id: MAT.RELAY, key: 'relay', name: 'Реле', shortDesc: 'Силовая цепь вдоль стрелки замыкается напряжением на боковом контакте.', selectable: true, category: 'electric', baseColor: [154,158,153]},
+  {...clone(MAT.COPPER_WIRE), id: MAT.ELECTROMAGNET, key: 'electromagnet', name: 'Электромагнит', shortDesc: 'Под напряжением притягивает железные опилки.', selectable: true, category: 'electric', baseColor: [167,104,74]},
+  {...clone(MAT.FAN), id: MAT.COMPRESSOR, key: 'compressor', name: 'Компрессор', shortDesc: 'Под напряжением перемещает воздух и повышает давление на выходе.', selectable: true, category: 'electric', baseColor: [163,157,119]},
+  {...clone(MAT.FAN), id: MAT.VACUUM_PUMP, key: 'vacuum_pump', name: 'Вакуумный насос', shortDesc: 'Под напряжением откачивает воздух со стороны входа на выход.', selectable: true, category: 'electric', baseColor: [135,159,164]},
+  {...clone(MAT.SAND), id: MAT.SOOT, key: 'soot', name: 'Сажа', shortDesc: 'Углеродистый остаток неполного горения.', selectable: true, category: 'powders', density: 1400, baseColor: [38,38,38]},
+  {...clone(MAT.TOOL_COOL), id: MAT.TOOL_EXTINGUISHER, key: 'extinguisher', name: 'Огнетушитель', shortDesc: 'Охлаждает область и вытесняет огонь углекислым газом.', selectable: true, category: 'tools', baseColor: [220,72,72]},
+  {...clone(MAT.STEAM), id: MAT.WATER_VAPOR, key: 'water_vapor', name: 'Водяной пар', shortDesc: 'Испарённая вода; конденсируется на холодных поверхностях.', selectable: false, freezeTempC: undefined, freezeInto: undefined, density: .7, baseColor: [185,207,225]}
 );
 
 export const MATERIAL_BY_ID: MaterialDef[] = new Array(MAX_MAT_ID);

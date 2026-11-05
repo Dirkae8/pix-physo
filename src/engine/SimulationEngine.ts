@@ -1,7 +1,8 @@
 import { BrushShape, GameSettings } from '../types/physics';
-import { MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
+import { ELEC_COND_LUT, MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
 import { AirSolver } from './AirSolver';
 import { ChemistrySolver } from './ChemistrySolver';
+import { DeviceSolver } from './DeviceSolver';
 import { ElectricSolver } from './ElectricSolver';
 import { MechanicsSolver } from './MechanicsSolver';
 import { ThermalSolver } from './ThermalSolver';
@@ -14,6 +15,7 @@ export class SimulationEngine {
   public thermalSolver: ThermalSolver;
   public electricSolver: ElectricSolver;
   public chemistrySolver: ChemistrySolver;
+  public deviceSolver: DeviceSolver;
   public mechanicsSolver: MechanicsSolver;
 
   public paused = false;
@@ -27,6 +29,7 @@ export class SimulationEngine {
     this.thermalSolver = new ThermalSolver(this.world.size);
     this.electricSolver = new ElectricSolver(this.world.size);
     this.chemistrySolver = new ChemistrySolver();
+    this.deviceSolver = new DeviceSolver();
     this.mechanicsSolver = new MechanicsSolver(this.world.size);
   }
 
@@ -71,6 +74,7 @@ export class SimulationEngine {
       this.thermalSolver.step(this.world);
       if (isBalance) this.thermalSolver.step(this.world);
       this.electricSolver.step(this.world, isBalance ? 8 : 5);
+      this.deviceSolver.step(this.world);
       this.chemistrySolver.step(this.world);
       for (let s = 0; s < mechSubsteps; s++) this.mechanicsSolver.step(this.world, s === 0);
     }
@@ -91,11 +95,17 @@ export class SimulationEngine {
       w.vy[x] = snow ? 0.4 : 1.5;
     }
     if (w.env.storm && w.rand() < 0.0008) {
-      const x = Math.floor(w.rand() * w.width);
-      for (let y = 0; y < Math.min(w.height, 50); y++) {
-        const xx = Math.max(0, Math.min(w.width - 1, x + Math.round(Math.sin(y * .3) * 2)));
-        if (w.mat[y * w.width + xx] !== MAT.EMPTY) break;
-        w.setCell(xx, y, MAT.ELECTRIC_ARC);
+      let x = Math.floor(w.rand() * w.width);
+      for (let y = 0; y < w.height; y++) {
+        if (y > 0 && y % 6 === 0) x = Math.max(0, Math.min(w.width - 1, x + Math.floor(w.rand()*5)-2));
+        const i = y*w.width+x;
+        if (w.mat[i] !== MAT.EMPTY && STATE_LUT[w.mat[i]] !== 4) {
+          w.temp[i] = Math.min(5500, w.temp[i] + 180);
+          if (ELEC_COND_LUT[w.mat[i]] > 0) w.volt[i] = Math.max(w.volt[i], 56);
+          w.airPressure[w.airIdxFromCell(x,y)] += 4;
+          break;
+        }
+        w.setCell(x, y, MAT.ELECTRIC_ARC);
       }
     }
   }
@@ -146,6 +156,15 @@ export class SimulationEngine {
         world.wetness[i] = 0;
         world.absorbedMat[i] = 0;
         world.stress[i] = 0;
+      });
+      return;
+    }
+
+    if (matId === MAT.TOOL_EXTINGUISHER) {
+      this.forEachBrushCell(cx, cy, r, shape, (x, y, falloff) => {
+        const i = y * world.width + x, m = world.mat[i];
+        world.temp[i] = Math.max(-40, world.temp[i] - 100 * falloff);
+        if (m === MAT.FIRE || m === MAT.EMBER) world.setCell(x, y, MAT.CO2, Math.min(30, world.temp[i]));
       });
       return;
     }

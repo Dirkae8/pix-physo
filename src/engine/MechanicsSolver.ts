@@ -556,6 +556,16 @@ export class MechanicsSolver {
     }
 
     const rho = DENSITY_LUT[m];
+    // A gas bubble displaces heavier liquid in the buoyant direction.
+    if (STATE_LUT[m] === 4 && Math.abs(world.env.gravity) > .05) {
+      const up = y + (world.env.gravity > 0 ? -1 : 1);
+      if (up >= 0 && up < world.height) {
+        const target = up * w + x, targetMat = world.mat[target];
+        if (STATE_LUT[targetMat] === 3 && DENSITY_LUT[targetMat] > rho && world.rand() < .45) {
+          world.swapCells(i, target); return;
+        }
+      }
+    }
     const ai = world.airIdxFromCell(x, y);
     const windX = world.airVx[ai] * 0.24;
     const windY = world.airVy[ai] * 0.24;

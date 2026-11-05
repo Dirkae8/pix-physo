@@ -28,7 +28,8 @@ export class ElectricSolver {
   }
 
   private effectiveConductivity(matId: number, metaVal: number): number {
-    if (matId === MAT.SWITCH || matId === MAT.BUTTON) {
+    if (matId === MAT.RELAY) return (metaVal & 4) ? 0.96 : 0;
+    if (matId === MAT.SWITCH || matId === MAT.BUTTON || matId === MAT.THERMOSTAT || matId === MAT.PRESSURE_SWITCH || matId === MAT.FUSE) {
       return metaVal > 0 ? 0.96 : 0;
     }
     return ELEC_COND_LUT[matId];
@@ -69,6 +70,18 @@ export class ElectricSolver {
         continue;
       }
 
+      if (m === MAT.RELAY) {
+        const direction = meta[i] & 3, x = i % w, y = (i / w) | 0;
+        // Coil contacts are perpendicular to the isolated switched path.
+        const horizontal = direction === 0 || direction === 2;
+        const a = horizontal ? (y > 0 ? i-w : -1) : (x > 0 ? i-1 : -1);
+        const b = horizontal ? (y+1 < h ? i+w : -1) : (x+1 < w ? i+1 : -1);
+        const powered = (a >= 0 && volt[a] > 4) || (b >= 0 && volt[b] > 4);
+        meta[i] = direction | (powered ? 4 : 0);
+      }
+      if (m === MAT.THERMOSTAT) meta[i] = temp[i] >= 60 ? 1 : 0;
+      if (m === MAT.PRESSURE_SWITCH) meta[i] = world.env.pressureKPa + world.airPressure[world.airIdxFromCell(i % w, (i / w) | 0)] >= 120 ? 1 : 0;
+      if (m === MAT.FUSE && temp[i] > 180) meta[i] = 0;
       if (m === MAT.BUTTON) {
         if (i >= w) {
           const above = mat[i - w];
@@ -107,7 +120,7 @@ export class ElectricSolver {
           continue;
         }
         // Natural RC discharge between frames so opening a switch immediately cuts power!
-        volt[i] *= 0.55;
+        volt[i] *= m === MAT.CAPACITOR ? 0.985 : 0.55;
       }
 
       if (volt[i] > 0.35 && this.effectiveConductivity(m, meta[i]) > 0) {
@@ -163,9 +176,20 @@ export class ElectricSolver {
             const j = nrow + nx;
             const mj = mat[j];
             if (mj === 0) continue;
+            // Prevent a diagonal short directly around an insulated relay body.
+            if (dx !== 0 && dy !== 0 && (mat[y*w+nx] === MAT.RELAY || mat[ny*w+x] === MAT.RELAY)) continue;
 
             const cj = this.effectiveConductivity(mj, meta[j]);
             if (cj <= 0 || !this.canCouple(m, mj)) continue;
+            // Only the two axial sides of a relay participate in the switched path.
+            if ((m === MAT.RELAY && (((meta[i]&1) === 0 && (dy !== 0 || dx === 0)) || ((meta[i]&1) !== 0 && (dx !== 0 || dy === 0)))) ||
+                (mj === MAT.RELAY && (((meta[j]&1) === 0 && (dy !== 0 || dx === 0)) || ((meta[j]&1) !== 0 && (dx !== 0 || dy === 0))))) continue;
+            if (m === MAT.DIODE || mj === MAT.DIODE) {
+              const dirA = meta[i] & 3, dirB = meta[j] & 3;
+              const forwardA = dirA === 0 ? dx : dirA === 1 ? dy : dirA === 2 ? -dx : -dy;
+              const forwardB = dirB === 0 ? dx : dirB === 1 ? dy : dirB === 2 ? -dx : -dy;
+              if ((m === MAT.DIODE && forwardA <= 0) || (mj === MAT.DIODE && forwardB <= 0)) continue;
+            }
 
             const loss = 0.994 - (1 - (cSrc < cj ? cSrc : cj)) * 0.08 - (dx !== 0 && dy !== 0 ? 0.004 : 0);
             const candV = vSrc * loss;
@@ -204,6 +228,7 @@ export class ElectricSolver {
       cur[i] = v * cond;
       const def = MATERIAL_BY_ID[m];
 
+      if (m === MAT.FUSE && v > 30 && temp[i] < 200) temp[i] += (v - 30) * .04;
       if (def.elecResistanceHeat && temp[i] < 1220) {
         temp[i] += v * v * def.elecResistanceHeat * 0.011;
       }

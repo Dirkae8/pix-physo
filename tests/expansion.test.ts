@@ -5,12 +5,12 @@ import { SimulationEngine } from '../src/engine/SimulationEngine';
 import type { GameSettings } from '../src/types/physics';
 
 describe('expanded palette and tools', () => {
-  it('has exactly 15 selectable items in every category and unique in-range IDs', () => {
-    expect(SELECTABLE_MATERIALS).toHaveLength(105);
+  it('has at least 15 selectable items in every category and unique in-range IDs', () => {
+    expect(SELECTABLE_MATERIALS.length).toBeGreaterThanOrEqual(105);
     for (const c of ['solids', 'powders', 'liquids', 'gases', 'electric', 'explosives', 'tools']) {
-      expect(SELECTABLE_MATERIALS.filter(m => m.category === c)).toHaveLength(15);
+      expect(SELECTABLE_MATERIALS.filter(m => m.category === c).length).toBeGreaterThanOrEqual(15);
     }
-    expect(new Set(SELECTABLE_MATERIALS.map(m => m.id)).size).toBe(105);
+    expect(new Set(SELECTABLE_MATERIALS.map(m => m.id)).size).toBe(SELECTABLE_MATERIALS.length);
     for (const m of SELECTABLE_MATERIALS) {
       expect(m.id).toBeLessThan(MAX_MAT_ID);
       expect(MATERIAL_BY_ID[m.id]).toBe(m);

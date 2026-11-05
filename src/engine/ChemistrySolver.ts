@@ -46,6 +46,19 @@ export class ChemistrySolver {
     const absMat = world.absorbedMat;
     const airP = world.airPressure;
 
+    // Equivalent sparse Monte Carlo sampling avoids a random draw on every steel pixel.
+    const expectedRustSamples = world.size * .000015 * (world.env.humidity / 100);
+    const rustSamples = Math.ceil(expectedRustSamples);
+    for (let n=0; n<rustSamples; n++) {
+      const i = Math.floor(world.rand() * world.size);
+      if (world.rand() >= expectedRustSamples / rustSamples || (mat[i] !== MAT.STEEL && mat[i] !== MAT.IRON_FILINGS)) continue;
+      const x=i%w, y=(i/w)|0;
+      for (let d=0; d<4; d++) {
+        const nx=x+DX4[d], ny=y+DY4[d];
+        if (nx>=0 && nx<w && ny>=0 && ny<h && (mat[ny*w+nx]===MAT.WATER || mat[ny*w+nx]===MAT.SALTWATER)) { mat[i]=MAT.RUST; break; }
+      }
+    }
+
     for (let y = 0; y < h; y++) {
       const row = y * w;
       for (let x = 0; x < w; x++) {
@@ -95,11 +108,15 @@ export class ChemistrySolver {
             }
           }
 
+          const oxygenCell = world.airIdxFromCell(x,y);
+          const oxygenPartialPressure = world.airOxygen[oxygenCell] * Math.max(0, world.env.pressureKPa + world.airPressure[oxygenCell]);
+          if (m === MAT.FIRE && !oxygenBoost && oxygenPartialPressure < 1.2) smothered = true;
           if (smothered) {
             mat[i] = m === MAT.FIRE ? MAT.SMOKE : MAT.STEAM;
             wet[i] = 140;
             continue;
           }
+          if (m === MAT.FIRE && !oxygenBoost) world.airOxygen[oxygenCell] = Math.max(0, world.airOxygen[oxygenCell] - .0008);
           if (oxygenBoost) {
             temp[i] = Math.min(3600, temp[i] + 140);
           }
@@ -154,6 +171,7 @@ export class ChemistrySolver {
           let nearFlame = false;
           let hasOxidizer = m === MAT.GUNPOWDER || m === MAT.NITROGLYCERIN || m === MAT.TNT;
           let nearPureO2 = false;
+          let oxygenNeighbors = 0;
 
           for (let dy = -1; dy <= 1; dy++) {
             const ny = y + dy;
@@ -173,12 +191,14 @@ export class ChemistrySolver {
                 nm === MAT.MOLTEN_METAL
               ) {
                 nearFlame = true;
-                hasOxidizer = true;
               } else if (nm === MAT.EMPTY) {
-                hasOxidizer = true;
+                const ai = world.airIdxFromCell(x,y);
+                hasOxidizer ||= world.airOxygen[ai] * Math.max(0, world.env.pressureKPa + world.airPressure[ai]) > 1.2;
+                oxygenNeighbors++;
               } else if (nm === MAT.OXYGEN) {
                 hasOxidizer = true;
                 nearPureO2 = true;
+                oxygenNeighbors += 3;
               }
             }
           }
@@ -200,6 +220,9 @@ export class ChemistrySolver {
                 mat[i - w] = MAT.FIRE;
                 temp[i - w] = 950 + heatAdd * 4;
                 wet[i - w] = 110 + (world.randByte() & 63);
+                // Fuel-dependent flame colour, preserved as the fire particle moves.
+                world.meta[i - w] = (m === MAT.ETHANOL || m === MAT.ETHANOL_VAPOR || m === MAT.METHANE || m === MAT.HYDROGEN) ? 1 : m === MAT.MAGNESIUM ? 2 : 0;
+                if (oxygenNeighbors <= 2 && world.rand() < .12) { mat[i-w] = MAT.SOOT; world.meta[i-w] = 0; }
               }
 
               const burnOutChance =
@@ -288,6 +311,7 @@ export class ChemistrySolver {
             if (mat[j] === MAT.WATER) {
               if (world.rand() < 0.045 + Math.max(0, temp[j]) * 0.0015) {
                 mat[j] = m === MAT.SALT ? MAT.SALTWATER : MAT.SYRUP;
+                if (m === MAT.SALT) temp[j] -= 0.3; // NaCl dissolution is slightly endothermic.
                 mat[i] = MAT.EMPTY;
                 break;
               }
@@ -355,6 +379,10 @@ export class ChemistrySolver {
             const j = ny * w + nx;
             const mj = mat[j];
             if (mj === MAT.EMPTY || mj === MAT.ACID) continue;
+            if (mj === MAT.ALKALI) {
+              mat[i] = MAT.SALTWATER; mat[j] = MAT.SALTWATER;
+              temp[i] += 12; temp[j] += 12; world.events.sizzleCount++; break;
+            }
 
             if (mj === MAT.SUGAR || mj === MAT.SYRUP) {
               mat[j] = MAT.CHARCOAL;

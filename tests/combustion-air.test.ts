@@ -36,7 +36,7 @@ describe('combustion, heat, and impermeable airflow', () => {
     const w = new World(96, 64); w.applyPreset('home'); w.env.windSpeed = 0;
     // Wall separates the whole domain; fans on the left push toward it.
     for (let y = 0; y < w.height; y++) w.setCell(48, y, MAT.STEEL);
-    for (let y = 20; y < 44; y++) for (let x = 16; x < 24; x++) w.setCell(x, y, MAT.FAN);
+    for (let y = 20; y < 44; y++) for (let x = 16; x < 24; x++) { w.setCell(x, y, MAT.FAN); w.volt[w.idx(x,y)] = 24; }
     const air = new AirSolver(w.airSize);
     for (let t = 0; t < 30; t++) air.step(w, 2);
     expect(w.airVx[w.airIdxFromCell(28, 28)]).toBeGreaterThan(0.05);
@@ -54,7 +54,7 @@ describe('combustion, heat, and impermeable airflow', () => {
     const run = (direction: 0 | 2) => {
       const w = new World(96, 64); w.applyPreset('home'); w.env.gravity = 0;
       w.activeFanDir = direction;
-      for (let y = 16; y < 48; y++) for (let x = 44; x < 52; x++) w.setCell(x, y, MAT.FAN);
+      for (let y = 16; y < 48; y++) for (let x = 44; x < 52; x++) { w.setCell(x, y, MAT.FAN); w.volt[w.idx(x,y)] = 24; }
       const start = direction === 0 ? 56 : 39;
       for (let y = 25; y < 39; y++) for (let x = start; x < start + 3; x++) w.setCell(x, y, MAT.FIRE);
       const air = new AirSolver(w.airSize), mechanics = new MechanicsSolver(w.size);

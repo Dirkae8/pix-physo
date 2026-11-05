@@ -55,7 +55,7 @@ export interface EnvironmentConfig {
 export interface GameSettings {
   computeMode: ComputeMode;
   substeps: number;
-  resolutionPreset: 'standard' | 'high' | 'ultra';
+  resolutionPreset: 'standard' | 'high' | 'ultra' | 'large';
   hdrBloom: boolean;
   bloomIntensity: number;
   realisticTextures: boolean;
@@ -165,6 +165,7 @@ export interface HoverProbe {
   pressureKPa: number;
   windVx: number;
   windVy: number;
+  oxygenFraction: number;
   voltage: number;
   charge: number;
   stress: number;

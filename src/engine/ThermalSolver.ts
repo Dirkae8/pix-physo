@@ -154,6 +154,28 @@ export class ThermalSolver {
 
     temp.set(out);
 
+    // Sparse line-of-sight thermal radiation, with energy transferred between heat capacities.
+    // Air/gases are transparent; the first solid or liquid absorbs the ray.
+    if ((world.stepTick & 7) === 0) for (let y=0; y<h; y++) for (let x=0; x<w; x++) {
+      const i=y*w+x, id=mat[i], t=temp[i];
+      if (!id || t < 300 || MATERIAL_BY_ID[id].state === 'gas') continue;
+      for (let d=0; d<4; d++) {
+        const dx=d===0?1:d===1?-1:0, dy=d===2?1:d===3?-1:0;
+        for (let k=1; k<=12; k++) {
+          const nx=x+dx*k, ny=y+dy*k; if (nx<0||nx>=w||ny<0||ny>=h) break;
+          const j=ny*w+nx, target=mat[j];
+          if (!target || MATERIAL_BY_ID[target].state === 'gas') continue;
+          const diff=temp[i]-temp[j];
+          if (diff>0) {
+            const ca=SPECIFIC_HEAT_LUT[id] || 1, cb=SPECIFIC_HEAT_LUT[target] || 1;
+            const energy=Math.min(diff*Math.min(ca,cb)*.01, diff*.0006/(1+k*.1));
+            temp[i]-=energy/ca; temp[j]+=energy/cb;
+          }
+          break;
+        }
+      }
+    }
+
     if (basePKPa !== this.lastBoilPressure) {
       for (let id = 1; id < MAX_MAT_ID; id++) {
         const d = MATERIAL_BY_ID[id];
@@ -174,6 +196,23 @@ export class ThermalSolver {
 
         const def = MATERIAL_BY_ID[m];
         const t = temp[i];
+
+        if (m === MAT.DRY_ICE && t > -78.5 && world.rand() < Math.min(.025, .001 + (t + 78.5) * .00015)) {
+          mat[i] = MAT.CO2; temp[i] = Math.max(-100, t - 8); world.wetness[i] = 190; continue;
+        }
+        if (m === MAT.WATER_VAPOR) {
+          // Approximate dew point from relative humidity (Magnus equation).
+          const rh = Math.max(.001, Math.min(1, humidity / 100));
+          const ambient = Math.max(-80, Math.min(100, ambT));
+          const gamma = Math.log(rh) + 17.625 * ambient / (243.04 + ambient);
+          const dew = 243.04 * gamma / (17.625 - gamma);
+          let coldSurface = false;
+          if (x > 0 && mat[i-1] === MAT.GLASS && temp[i-1] < dew) coldSurface = true;
+          if (x+1 < w && mat[i+1] === MAT.GLASS && temp[i+1] < dew) coldSurface = true;
+          if (y > 0 && mat[i-w] === MAT.GLASS && temp[i-w] < dew) coldSurface = true;
+          if (y+1 < h && mat[i+w] === MAT.GLASS && temp[i+w] < dew) coldSurface = true;
+          if (coldSurface && world.rand() < .015) { mat[i] = t < 0 ? MAT.FROST : MAT.WATER; temp[i] += 2; continue; }
+        }
 
         // 1. Melting
         if (def.meltTempC !== undefined && def.meltInto !== undefined && t > def.meltTempC) {
@@ -228,15 +267,16 @@ export class ThermalSolver {
             temp[i - w] = t;
             world.wetness[i - w] = 180;
           } else if (
-            m === MAT.WATER &&
-            humidity < 35 &&
-            t > 28 &&
-            y > 0 &&
-            mat[i - w] === MAT.EMPTY &&
-            world.rand() < 0.0005 * (1 - humidity / 100)
+            (m === MAT.WATER || m === MAT.SALTWATER || m === MAT.SEAWATER) && t > 0 && y > 0 && mat[i - w] === MAT.EMPTY &&
+            world.rand() < Math.min(.002, .00018 * Math.exp(Math.min(3, (t - 20) / 35)) * Math.max(0, 1 - humidity / 100))
           ) {
-            mat[i] = MAT.STEAM;
-            world.wetness[i] = 120;
+            if (m !== MAT.WATER && world.rand() < .25) {
+              mat[i] = MAT.SALT;
+              mat[i-w] = MAT.WATER_VAPOR; temp[i-w] = t; world.wetness[i-w] = 120;
+            } else {
+              mat[i] = MAT.WATER_VAPOR; world.wetness[i] = 120;
+            }
+            temp[i] = Math.max(-5, t - 2);
             continue;
           }
         }

@@ -59,7 +59,8 @@ void main() {
   // Intrinsic light emitters (Fire, Plasma, Lava, Lamps, Electric Arcs, Uranium, Incandescent Solids)
   vec3 emit = vec3(0.0);
   if (matId == 62) { // FIRE
-    emit = vec3(1.55, 0.62, 0.14);
+    int fireKind = int(stB.b * 255.0 + 0.5);
+    emit = fireKind == 1 ? vec3(0.30, 0.75, 1.7) : fireKind == 2 ? vec3(1.8, 1.8, 1.65) : vec3(1.55, 0.62, 0.14);
   } else if (matId == 63 || matId == 77) { // PLASMA / ELECTRIC_ARC
     emit = vec3(0.75, 0.88, 1.85);
   } else if (matId == 26 || matId == 69 || matId == 70) { // LAVA / MOLTEN
@@ -292,6 +293,8 @@ void main() {
   float ndl = clamp(dot(normal, lightDir), 0.0, 1.0);
 
   vec3 col = baseCol;
+  if (matId == 62 && meta == 1) { baseCol = vec3(0.25, 0.5, 1.0); accentCol = vec3(0.75, 0.85, 1.0); col = baseCol; }
+  if (matId == 62 && meta == 2) { baseCol = vec3(0.95, 0.95, 0.90); accentCol = vec3(1.0); col = baseCol; }
   float emissiveBoost = 0.0;
   vec2 fpx = vec2(px);
 
@@ -390,7 +393,7 @@ void main() {
         }
       } else if (matId == 50) {
         // Turbine Fan: animated spinning rotor blades!
-        float bladeSpeed = (volt > 3.0) ? 18.0 : 8.0;
+        float bladeSpeed = (volt > 3.0) ? 18.0 : 0.0;
         float blade = sin((fpx.x + fpx.y) * 0.85 - uTime * bladeSpeed);
         col = mix(baseCol * 0.55, accentCol, smoothstep(-0.2, 0.7, blade));
       } else if (matId == 46) {
@@ -442,7 +445,7 @@ void main() {
   }
 
   // Planck Blackbody Thermal Radiation on ANY hot material!
-  if (tempC > 525.0) {
+  if (tempC > 525.0 && !(matId == 62 && meta > 0)) {
     vec3 bb = blackbodyColor(tempC);
     float blend = clamp((tempC - 525.0) / 1300.0, 0.0, 0.92);
     col = mix(col, bb, blend) + bb * 0.35;

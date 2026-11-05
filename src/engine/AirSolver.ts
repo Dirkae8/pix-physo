@@ -5,6 +5,7 @@ export class AirSolver {
   private nextP: Float32Array;
   private nextVx: Float32Array;
   private nextVy: Float32Array;
+  private nextOxygen: Float32Array;
   private fanDirs: Uint8Array;
   private fanBoosts: Float32Array;
 
@@ -12,6 +13,7 @@ export class AirSolver {
     this.nextP = new Float32Array(airSize);
     this.nextVx = new Float32Array(airSize);
     this.nextVy = new Float32Array(airSize);
+    this.nextOxygen = new Float32Array(airSize);
     this.fanDirs = new Uint8Array(airSize);
     this.fanBoosts = new Float32Array(airSize);
   }
@@ -21,6 +23,7 @@ export class AirSolver {
       this.nextP = new Float32Array(airSize);
       this.nextVx = new Float32Array(airSize);
       this.nextVy = new Float32Array(airSize);
+      this.nextOxygen = new Float32Array(airSize);
       this.fanDirs = new Uint8Array(airSize);
       this.fanBoosts = new Float32Array(airSize);
     }
@@ -57,7 +60,7 @@ export class AirSolver {
         let tempSum = 0;
         let fanHere = false;
         let fanDir = 0;
-        let fanBoost = 1.0;
+        let fanBoost = 0;
 
         for (let dy = 0; dy < 4; dy++) {
           const y = cy0 + dy;
@@ -74,7 +77,8 @@ export class AirSolver {
                 fanHere = true;
                 fanDir = meta[ci] & 3;
                 if (Math.abs(volt[ci]) > 3) {
-                  fanBoost = 2.25;
+                  const setting = meta[ci] >>> 2;
+                  fanBoost = Math.max(fanBoost, 2.25 * (setting ? setting / 63 : 1) * Math.min(1, Math.abs(volt[ci]) / 24));
                 }
               } else {
                 solidCount++;
@@ -105,7 +109,7 @@ export class AirSolver {
           }
         }
 
-        if (fanHere) {
+        if (fanHere && fanBoost > 0) {
           this.fanDirs[ai] = fanDir + 1;
           this.fanBoosts[ai] = fanBoost;
           fanCount++;
@@ -243,6 +247,25 @@ export class AirSolver {
       vx.set(this.nextVx);
       vy.set(this.nextVy);
     }
+
+    // Oxygen diffuses and is advected through open air cells, not through walls.
+    // It is replenished at open boundaries and consumed by the chemistry solver.
+    const oxygen = world.airOxygen;
+    for (let ay=0; ay<ah; ay++) for (let ax=0; ax<aw; ax++) {
+      const i=ay*aw+ax, center=oxygen[i];
+      if (wall[i]) { this.nextOxygen[i]=center; continue; }
+      const left=ax>0 && !wall[i-1] ? oxygen[i-1] : center;
+      const right=ax+1<aw && !wall[i+1] ? oxygen[i+1] : center;
+      const up=ay>0 && !wall[i-aw] ? oxygen[i-aw] : center;
+      const down=ay+1<ah && !wall[i+aw] ? oxygen[i+aw] : center;
+      const advX = Math.min(.18,Math.abs(vx[i])*.004) * ((vx[i] >= 0 ? left : right)-center);
+      const advY = Math.min(.18,Math.abs(vy[i])*.004) * ((vy[i] >= 0 ? up : down)-center);
+      let next = center + .025*(left+right+up+down-4*center) + advX + advY;
+      const edge = world.env.boundary === 'open_all' ? ax===0||ay===0||ax===aw-1||ay===ah-1 : world.env.boundary === 'open_sky' && ay===0;
+      if (edge) next += (.21-next)*.08;
+      this.nextOxygen[i]=Math.max(0,Math.min(.21,next));
+    }
+    oxygen.set(this.nextOxygen);
 
     // 4. Destructive Shockwaves: High air pressure gradient shatters fragile walls (Glass, Ice, Wood, Brick)!
     for (let ay = 1; ay < ah - 1; ay++) {
