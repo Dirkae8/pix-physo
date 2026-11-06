@@ -1,4 +1,12 @@
-import { MAT, MATERIAL_BY_ID, MAX_MAT_ID, POROSITY_LUT } from '../materials/registry';
+import {
+  EXPANSION_LIQUID_IDS,
+  MAT,
+  MATERIAL_BY_ID,
+  MAX_MAT_ID,
+  POROSITY_LUT,
+  XMAT,
+  XSTATE,
+} from '../materials/registry';
 import { World } from './World';
 
 const IS_ABSORBABLE_LUT = new Uint8Array(MAX_MAT_ID);
@@ -8,6 +16,38 @@ IS_ABSORBABLE_LUT[MAT.MOTOR_OIL] = 1;
 IS_ABSORBABLE_LUT[MAT.CRUDE_OIL] = 1;
 IS_ABSORBABLE_LUT[MAT.GASOLINE] = 1;
 IS_ABSORBABLE_LUT[MAT.ETHANOL] = 1;
+// Новые жидкости тоже впитываются фитилём, бумагой, ватой и силикагелем.
+for (const id of EXPANSION_LIQUID_IDS) IS_ABSORBABLE_LUT[id] = 1;
+
+/** Водные жидкости и туман вытесняют кислород и гасят открытое пламя; масла — нет. */
+const SMOTHERS_FIRE_LUT = new Uint8Array(MAX_MAT_ID);
+for (const id of [
+  MAT.CO2, MAT.WATER, MAT.SALTWATER, MAT.LIQUID_NITROGEN, MAT.SEAWATER,
+  XMAT.CHICKEN_BROTH, XMAT.MILK, XMAT.VINEGAR, XMAT.SOY_SAUCE, XMAT.BEER,
+  XMAT.RED_WINE, XMAT.COFFEE_DRINK, XMAT.ORANGE_JUICE, XMAT.LIQUID_SOAP,
+  XMAT.WATER_MIST,
+]) SMOTHERS_FIRE_LUT[id] = 1;
+
+// Плоские таблицы вместо обращений к объектам определений в горячем цикле.
+const FLAMMABILITY_LUT = new Float32Array(MAX_MAT_ID);
+const IGNITION_LUT = new Float32Array(MAX_MAT_ID);
+const BURN_HEAT_LUT = new Float32Array(MAX_MAT_ID);
+const EXPLOSIVE_LUT = new Float32Array(MAX_MAT_ID);
+const DETONATION_LUT = new Float32Array(MAX_MAT_ID);
+const IS_GAS_LUT = new Uint8Array(MAX_MAT_ID);
+const ACID_RES_LUT = new Float32Array(MAX_MAT_ID);
+const METALLIC_LUT = new Float32Array(MAX_MAT_ID);
+for (let id = 0; id < MAX_MAT_ID; id++) {
+  const d = MATERIAL_BY_ID[id];
+  FLAMMABILITY_LUT[id] = d.flammability;
+  IGNITION_LUT[id] = d.ignitionTempC ?? Infinity;
+  BURN_HEAT_LUT[id] = d.burnHeat ?? 40;
+  EXPLOSIVE_LUT[id] = d.explosivePower ?? 0;
+  DETONATION_LUT[id] = d.detonationShockKPa ?? Infinity;
+  IS_GAS_LUT[id] = d.state === 'gas' ? 1 : 0;
+  ACID_RES_LUT[id] = d.acidResistance;
+  METALLIC_LUT[id] = d.metallic;
+}
 
 const DX4 = [0, -1, 1, 0];
 const DY4 = [-1, 0, 0, 1];
@@ -16,8 +56,8 @@ const NEEDS_CHEM_LUT = new Uint8Array(MAX_MAT_ID);
 for (let id = 1; id < MAX_MAT_ID; id++) {
   const d = MATERIAL_BY_ID[id];
   if (
-    d.detonationShockKPa !== undefined ||
-    d.flammability > 0 ||
+    DETONATION_LUT[id] !== Infinity ||
+    FLAMMABILITY_LUT[id] > 0 ||
     d.porosity > 0 ||
     d.waterSoluble ||
     id === MAT.FIRE ||
@@ -25,12 +65,16 @@ for (let id = 1; id < MAX_MAT_ID; id++) {
     id === MAT.ELECTRIC_ARC ||
     id === MAT.EMBER ||
     id === MAT.SMOKE ||
+    id === XSTATE.PLASTIC_FUME ||
     id === MAT.THERMITE ||
     id === MAT.CEMENT ||
     id === MAT.SODIUM ||
     id === MAT.ACID ||
     id === MAT.CHLORINE ||
-    id === MAT.NEUTRON
+    id === MAT.NEUTRON ||
+    id === XMAT.DRY_WATER ||
+    id === XMAT.BAKING_SODA ||
+    id === XMAT.VINEGAR
   ) {
     NEEDS_CHEM_LUT[id] = 1;
   }
@@ -66,21 +110,55 @@ export class ChemistrySolver {
         const m = mat[i];
         if (!NEEDS_CHEM_LUT[m]) continue;
 
-        const def = MATERIAL_BY_ID[m];
         const t = temp[i];
 
+        // 0. «Сухая вода» — капли H₂O в оболочке SiO₂: нагрев, удар или сдвиг
+        // разрушает оболочку, и вещество превращается в обычную воду.
+        if (m === XMAT.DRY_WATER) {
+          const motion = world.vx[i] * world.vx[i] + world.vy[i] * world.vy[i];
+          if ((t > 45 || world.stress[i] > 4 || motion > 9) && world.rand() < 0.12) {
+            mat[i] = MAT.WATER;
+            temp[i] = Math.max(0, Math.min(90, t));
+            world.vx[i] = 0; world.vy[i] = 0;
+            wet[i] = 0; absMat[i] = 0;
+            continue;
+          }
+        }
+
+        // 0b. Сода + кислота/уксус → углекислый газ (реакция нейтрализации).
+        if (m === XMAT.BAKING_SODA || m === XMAT.VINEGAR) {
+          const isSoda = m === XMAT.BAKING_SODA;
+          let reacted = false;
+          for (let d = 0; d < 4 && !reacted; d++) {
+            const nx = x + DX4[d], ny = y + DY4[d];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+            const j = ny * w + nx, mj = mat[j];
+            const partner = isSoda
+              ? (mj === MAT.ACID || mj === XMAT.VINEGAR)
+              : (mj === XMAT.BAKING_SODA || mj === MAT.ACID);
+            if (!partner) continue;
+            mat[i] = MAT.CO2; wet[i] = 150; temp[i] = Math.max(-20, temp[i] - 3);
+            mat[j] = MAT.SALTWATER; temp[j] += 4;
+            world.airPressure[world.airIdxFromCell(x, y)] += 0.35;
+            world.events.sizzleCount++;
+            reacted = true;
+          }
+          if (reacted) continue;
+        }
+
         // 1. Shockwave sympathetic detonation
-        if (def.detonationShockKPa !== undefined) {
+        if (DETONATION_LUT[m] !== Infinity) {
           const ai = world.airIdxFromCell(x, y);
           const localOverP = airP[ai];
           const vx = world.vx[i];
           const vy = world.vy[i];
           const velSq = vx * vx + vy * vy;
           if (
-            localOverP > def.detonationShockKPa ||
-            (m === MAT.NITROGLYCERIN && velSq > 11.56 && y + 1 < h && mat[i + w] !== MAT.EMPTY && mat[i + w] !== MAT.NITROGLYCERIN)
+            localOverP > DETONATION_LUT[m] ||
+            ((m === MAT.NITROGLYCERIN || m === XMAT.NITROMETHANE) && velSq > 11.56 && y + 1 < h &&
+             mat[i + w] !== MAT.EMPTY && mat[i + w] !== m)
           ) {
-            const pwr = def.explosivePower ?? 1.2;
+            const pwr = EXPLOSIVE_LUT[m] || 1.2;
             mat[i] = MAT.PLASMA;
             world.addImpulseExplosion(x, y, Math.round(14 * pwr), pwr, 3200);
             continue;
@@ -99,9 +177,9 @@ export class ChemistrySolver {
               const nx = x + dx;
               if (nx < 0 || nx >= w) continue;
               const nm = mat[nrow + nx];
-              if (m === MAT.FIRE && (nm === MAT.CO2 || nm === MAT.WATER || nm === MAT.SALTWATER || nm === MAT.LIQUID_NITROGEN)) {
+              if (m === MAT.FIRE && SMOTHERS_FIRE_LUT[nm]) {
                 smothered = true;
-              } else if (nm === MAT.OXYGEN) {
+              } else if (nm === MAT.OXYGEN || nm === XMAT.OZONE || nm === XMAT.NITROUS_OXIDE) {
                 oxygenBoost = true;
                 if (world.rand() < 0.25) mat[nrow + nx] = MAT.FIRE;
               }
@@ -136,8 +214,8 @@ export class ChemistrySolver {
           continue;
         }
 
-        if (m === MAT.SMOKE || m === MAT.STEAM) {
-          if (m === MAT.SMOKE) {
+        if (m === MAT.SMOKE || m === MAT.STEAM || m === XSTATE.PLASTIC_FUME) {
+          if (m !== MAT.STEAM) {
             if (wet[i] <= 1) mat[i] = MAT.EMPTY;
             else if (world.rand() < 0.06) wet[i]--;
           }
@@ -167,9 +245,10 @@ export class ChemistrySolver {
         }
 
         // 4. General Combustion & Explosive Ignition
-        if (def.flammability > 0 && def.ignitionTempC !== undefined) {
+        if (FLAMMABILITY_LUT[m] > 0 && IGNITION_LUT[m] !== Infinity) {
           let nearFlame = false;
-          let hasOxidizer = m === MAT.GUNPOWDER || m === MAT.NITROGLYCERIN || m === MAT.TNT;
+          // Большинство новых ВВ содержат собственный окислитель.
+          let hasOxidizer = EXPLOSIVE_LUT[m] >= 0.4 || m === MAT.GUNPOWDER || m === MAT.NITROGLYCERIN || m === MAT.TNT;
           let nearPureO2 = false;
           let oxygenNeighbors = 0;
 
@@ -203,40 +282,61 @@ export class ChemistrySolver {
             }
           }
 
-          if (hasOxidizer && (t >= def.ignitionTempC || (nearFlame && t >= def.ignitionTempC * 0.45))) {
-            const prob = def.flammability * 0.35 * (nearPureO2 ? 2.8 : nearFlame ? 1.0 : 0.35);
+          if (hasOxidizer && (t >= IGNITION_LUT[m] || (nearFlame && t >= IGNITION_LUT[m] * 0.45))) {
+            const prob = FLAMMABILITY_LUT[m] * 0.35 * (nearPureO2 ? 2.8 : nearFlame ? 1.0 : 0.35);
             if (world.rand() < prob) {
-              if (def.state !== 'gas' && def.explosivePower && def.explosivePower >= 0.6) {
-                const pwr = def.explosivePower * (nearPureO2 ? 1.45 : 1.0);
+              if (!IS_GAS_LUT[m] && EXPLOSIVE_LUT[m] >= 0.6) {
+                const pwr = EXPLOSIVE_LUT[m] * (nearPureO2 ? 1.45 : 1.0);
                 mat[i] = MAT.FIRE;
                 world.addImpulseExplosion(x, y, Math.max(6, Math.round(13 * pwr)), pwr, 2400);
                 continue;
               }
 
-              const heatAdd = (def.burnHeat ?? 40) * (nearPureO2 ? 2.4 : 1.0);
+              const heatAdd = BURN_HEAT_LUT[m] * (nearPureO2 ? 2.4 : 1.0);
               temp[i] += heatAdd;
 
               if (y > 0 && (mat[i - w] === MAT.EMPTY || mat[i - w] === MAT.OXYGEN)) {
                 mat[i - w] = MAT.FIRE;
                 temp[i - w] = 950 + heatAdd * 4;
                 wet[i - w] = 110 + (world.randByte() & 63);
-                // Fuel-dependent flame colour, preserved as the fire particle moves.
-                world.meta[i - w] = (m === MAT.ETHANOL || m === MAT.ETHANOL_VAPOR || m === MAT.METHANE || m === MAT.HYDROGEN) ? 1 : m === MAT.MAGNESIUM ? 2 : 0;
+                // Цвет пламени зависит от топлива: спирты/лёгкие газы — синий,
+                // металлы — ослепительно белый, остальные — обычный оранжевый.
+                world.meta[i - w] =
+                  (m === MAT.ETHANOL || m === MAT.ETHANOL_VAPOR || m === MAT.METHANE || m === MAT.HYDROGEN ||
+                   m === XMAT.ACETONE || m === XSTATE.SOLVENT_VAPOR || m === XMAT.BIOGAS) ? 1
+                  : (m === MAT.MAGNESIUM || m === XMAT.ALUMINUM_FILINGS || m === XMAT.TITANIUM_FILINGS ||
+                     m === XMAT.PYRO_MIX) ? 2 : 0;
                 if (oxygenNeighbors <= 2 && world.rand() < .12) { mat[i-w] = MAT.SOOT; world.meta[i-w] = 0; }
               }
 
+              // Скорость выгорания подчинена реальной природе материала:
+              // фитиль тлеет очень долго, бумага и ткань сгорают быстро,
+              // полимеры плавятся и дымят, уголь почти не расходуется.
               const burnOutChance =
-                m === MAT.COAL || m === MAT.CHARCOAL
+                m === MAT.COAL || m === MAT.CHARCOAL || m === XMAT.COAL_DUST
                   ? 0.008
-                  : m === MAT.WOOD || m === MAT.NAPALM
+                  : m === XMAT.WICK
+                  ? 0.012
+                  : m === MAT.WOOD || m === MAT.NAPALM || m === XMAT.PLYWOOD || m === XMAT.CORK
                   ? 0.022
-                  : m === MAT.MOTOR_OIL || m === MAT.CRUDE_OIL
+                  : m === MAT.MOTOR_OIL || m === MAT.CRUDE_OIL || m === XMAT.VEGETABLE_OIL ||
+                    m === XMAT.OLIVE_OIL || m === XMAT.CASTOR_OIL || m === XMAT.DIESEL || m === XMAT.KEROSENE
                   ? 0.045
+                  : m === XMAT.PAPER || m === XMAT.CARDBOARD || m === XMAT.COTTON_CLOTH
+                  ? 0.09
                   : 0.16;
 
               if (world.rand() < burnOutChance) {
-                if (m === MAT.WOOD || m === MAT.SUGAR) {
+                if (m === MAT.WOOD || m === MAT.SUGAR || m === XMAT.PLYWOOD || m === XMAT.CORK) {
                   mat[i] = world.rand() < 0.45 ? MAT.CHARCOAL : MAT.FIRE;
+                } else if (m === XMAT.PAPER || m === XMAT.CARDBOARD || m === XMAT.COTTON_CLOTH) {
+                  mat[i] = XSTATE.PAPER_ASH;
+                } else if (
+                  m === XMAT.PLASTIC_ABS || m === XMAT.PVC || m === XMAT.POLYETHYLENE ||
+                  m === XMAT.STYROFOAM || m === XMAT.LINOLEUM || m === XMAT.ACRYLIC_GLASS ||
+                  m === XSTATE.MOLTEN_PLASTIC
+                ) {
+                  mat[i] = XSTATE.PLASTIC_FUME;
                 } else {
                   mat[i] = m === MAT.ETHANOL ? MAT.STEAM : MAT.FIRE;
                 }
@@ -260,7 +360,7 @@ export class ChemistrySolver {
               const mj = mat[j];
 
               if (IS_ABSORBABLE_LUT[mj] && (absMat[i] === 0 || absMat[i] === mj)) {
-                const absorbStep = m === MAT.SPONGE ? 95 : m === MAT.SAWDUST ? 115 : 135;
+                const absorbStep = m === XMAT.WICK ? 165 : m === MAT.SPONGE ? 95 : m === MAT.SAWDUST ? 115 : 135;
                 if (wet[i] + absorbStep <= maxCap + 30) {
                   absMat[i] = mj;
                   wet[i] = Math.min(255, wet[i] + absorbStep);
@@ -281,15 +381,16 @@ export class ChemistrySolver {
           }
 
           if (wet[i] > 20 && absMat[i] !== 0) {
-            const liqDef = MATERIAL_BY_ID[absMat[i]];
-            if ((absMat[i] === MAT.WATER || absMat[i] === MAT.SALTWATER) && t > 105) {
+            const absorbed = absMat[i];
+            if ((absorbed === MAT.WATER || absorbed === MAT.SALTWATER || absorbed === MAT.SEAWATER ||
+                 SMOTHERS_FIRE_LUT[absorbed]) && t > 105) {
               wet[i] = Math.max(0, wet[i] - 18);
               if (wet[i] === 0) absMat[i] = 0;
               if (y > 0 && mat[i - w] === MAT.EMPTY) {
                 mat[i - w] = MAT.STEAM;
                 wet[i - w] = 150;
               }
-            } else if (liqDef.flammability > 0 && liqDef.ignitionTempC && t > liqDef.ignitionTempC) {
+            } else if (FLAMMABILITY_LUT[absorbed] > 0 && t > IGNITION_LUT[absorbed]) {
               wet[i] = Math.max(0, wet[i] - 8);
               temp[i] += 18;
               if (y > 0 && mat[i - w] === MAT.EMPTY && world.rand() < 0.35) {
@@ -396,9 +497,16 @@ export class ChemistrySolver {
               break;
             }
 
-            const targetDef = MATERIAL_BY_ID[mj];
-            if (targetDef.acidResistance < 0.92 && world.rand() < (1 - targetDef.acidResistance) * 0.095) {
-              mat[j] = targetDef.metallic > 0.5 ? MAT.HYDROGEN : MAT.SMOKE;
+            // Карбонаты (мрамор, мел, сода) нейтрализуют кислоту с выделением CO₂.
+            if (mj === XMAT.MARBLE || mj === XMAT.CHALK || mj === XMAT.BAKING_SODA) {
+              mat[j] = MAT.CO2; wet[j] = 160; temp[i] += 6; temp[j] += 8;
+              if (world.rand() < 0.35) mat[i] = MAT.EMPTY;
+              world.events.sizzleCount++;
+              break;
+            }
+
+            if (ACID_RES_LUT[mj] < 0.92 && world.rand() < (1 - ACID_RES_LUT[mj]) * 0.095) {
+              mat[j] = METALLIC_LUT[mj] > 0.5 ? MAT.HYDROGEN : MAT.SMOKE;
               wet[j] = 180;
               temp[i] += 28;
               temp[j] += 45;

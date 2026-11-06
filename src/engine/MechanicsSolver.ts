@@ -11,25 +11,33 @@ import {
 import { World } from './World';
 
 export class MechanicsSolver {
-  private visited: Uint8Array;
+  // Метки поколений вместо vis.fill(0): большой мир больше не чистит весь массив
+  // на каждом подшаге, при этом логика BFS остаётся прежней.
+  private visited: Uint16Array;
+  private visitGen = 0;
   private bfsQueue: Int32Array;
   private compCells: Int32Array;
   private highSurfBuf: Int32Array;
   private lowAirBuf: Int32Array;
 
   constructor(size: number) {
-    this.visited = new Uint8Array(size);
+    this.visited = new Uint16Array(size);
     this.bfsQueue = new Int32Array(size);
     this.compCells = new Int32Array(size);
-    this.highSurfBuf = new Int32Array(4096);
-    this.lowAirBuf = new Int32Array(4096);
+    this.highSurfBuf = new Int32Array(size);
+    this.lowAirBuf = new Int32Array(size);
   }
 
   public ensureSize(size: number): void {
     if (this.visited.length !== size) {
-      this.visited = new Uint8Array(size);
+      this.visited = new Uint16Array(size);
       this.bfsQueue = new Int32Array(size);
       this.compCells = new Int32Array(size);
+      // Буферы поверхностей раньше были фиксированными на 4096 ячеек: в мире
+      // 960×540 компонент жидкости может быть больше, и часть переноса терялась.
+      this.highSurfBuf = new Int32Array(size);
+      this.lowAirBuf = new Int32Array(size);
+      this.visitGen = 0;
     }
   }
 
@@ -46,7 +54,8 @@ export class MechanicsSolver {
     this.updateHandGrab(world);
 
     // Connected-Component Pascal & Torricelli Communicating-Vessels Solver (once per frame on substep 0)
-    if (runPascalVessels && world.env.gravity > 0.5) {
+    // При отрицательной гравитации сообщающиеся сосуды работают зеркально, а не отключаются.
+    if (runPascalVessels && Math.abs(world.env.gravity) > 0.5) {
       this.solveCommunicatingVessels(world);
     }
 
@@ -102,7 +111,11 @@ export class MechanicsSolver {
     const vis = this.visited;
     const queue = this.bfsQueue;
     const comp = this.compCells;
-    vis.fill(0);
+    let gen = ++this.visitGen;
+    if (gen >= 65535) {
+      vis.fill(0);
+      gen = this.visitGen = 1;
+    }
     let lowAirPressure=Infinity, highAirPressure=-Infinity;
     for (let ai=0; ai<world.airSize; ai++) if (!world.airWall[ai]) {
       lowAirPressure=Math.min(lowAirPressure,world.airPressure[ai]);
@@ -111,7 +124,7 @@ export class MechanicsSolver {
     const hasPressureVariation=highAirPressure-lowAirPressure>1;
 
     for (let startIdx = 0; startIdx < world.size; startIdx++) {
-      if (vis[startIdx]) continue;
+      if (vis[startIdx] === gen) continue;
       const m = mat[startIdx];
       if (STATE_LUT[m] !== 3) {
         if (world.stress[startIdx] !== 0) world.stress[startIdx] *= 0.88;
@@ -122,7 +135,7 @@ export class MechanicsSolver {
       let qHead = 0;
       let qTail = 0;
       let compLen = 0;
-      vis[startIdx] = 1;
+      vis[startIdx] = gen;
       queue[qTail++] = startIdx;
 
       let minSurfLiqY = h;
@@ -147,29 +160,29 @@ export class MechanicsSolver {
         // 4-neighbor BFS expansion
         if (cx > 0) {
           const ni = ci - 1;
-          if (!vis[ni] && mat[ni] === m) {
-            vis[ni] = 1;
+          if (vis[ni] !== gen && mat[ni] === m) {
+            vis[ni] = gen;
             queue[qTail++] = ni;
           }
         }
         if (cx + 1 < w) {
           const ni = ci + 1;
-          if (!vis[ni] && mat[ni] === m) {
-            vis[ni] = 1;
+          if (vis[ni] !== gen && mat[ni] === m) {
+            vis[ni] = gen;
             queue[qTail++] = ni;
           }
         }
         if (cy > 0) {
           const ni = ci - w;
-          if (!vis[ni] && mat[ni] === m) {
-            vis[ni] = 1;
+          if (vis[ni] !== gen && mat[ni] === m) {
+            vis[ni] = gen;
             queue[qTail++] = ni;
           }
         }
         if (cy + 1 < h) {
           const ni = ci + w;
-          if (!vis[ni] && mat[ni] === m) {
-            vis[ni] = 1;
+          if (vis[ni] !== gen && mat[ni] === m) {
+            vis[ni] = gen;
             queue[qTail++] = ni;
           }
         }
@@ -178,28 +191,30 @@ export class MechanicsSolver {
       // A pressure difference above connected liquid surfaces drives flow even
       // when both surfaces are at the same height. Transfers remain inside the
       // connected liquid component and never cross a wall.
-      if (hasPressureVariation && compLen > 1 && world.env.gravity > 0) {
-        const rhoScale = DENSITY_LUT[m] * .0025 * (world.env.gravity / 9.81);
+      let pressureMoved = false;
+      if (hasPressureVariation && compLen > 1 && Math.abs(world.env.gravity) > 0.5) {
+        const rhoScale = DENSITY_LUT[m] * .0025 * (Math.abs(world.env.gravity) / 9.81);
+        const gSign = world.env.gravity >= 0 ? 1 : -1;
         let donor=-1, receiver=-1, high=-Infinity, low=Infinity, maxPressure=-Infinity, minPressure=Infinity;
         for (let k=0; k<compLen; k++) {
           const ci=comp[k], cx=ci%w, cy=(ci/w)|0;
           if (cy<=0 || cy+1>=h || mat[ci+w]!==m) continue;
           const above=mat[ci-w]; if (above!==MAT.EMPTY && STATE_LUT[above]!==4) continue;
           const pressure=world.airPressure[world.airIdxFromCell(cx,cy-1)];
-          const head=pressure-rhoScale*cy;
+          const head=pressure-rhoScale*cy*gSign;
           if (head>high) { high=head; donor=ci; }
           if (head<low) { low=head; receiver=ci-w; }
           maxPressure=Math.max(maxPressure,pressure); minPressure=Math.min(minPressure,pressure);
         }
         if (maxPressure-minPressure>1 && high-low>Math.max(.5,rhoScale*.5) && donor>=0 && receiver>=0 && donor!==receiver) {
           world.swapCells(donor,receiver);
-          continue;
+          pressureMoved = true;
         }
       }
 
       if (compLen < 16 || maxFreeAirY <= minSurfLiqY + 1) {
         // Still record hydrostatic pressure P = rho * g * depth
-        const rhoScale = DENSITY_LUT[m] * 0.0025 * (world.env.gravity / 9.81);
+        const rhoScale = DENSITY_LUT[m] * 0.0025 * (Math.abs(world.env.gravity) / 9.81);
         for (let k = 0; k < compLen; k++) {
           const ci = comp[k];
           const cy = (ci / w) | 0;
@@ -223,27 +238,30 @@ export class MechanicsSolver {
         const am = mat[aboveIdx];
         if (am !== MAT.EMPTY && STATE_LUT[am] !== 4) continue;
 
-        if (cy <= minSurfLiqY + 1 && highCount < 4096) {
+        if (cy <= minSurfLiqY + 1 && highCount < this.highSurfBuf.length) {
           this.highSurfBuf[highCount++] = ci;
         }
-        if (cy - 1 >= maxFreeAirY - 1 && lowCount < 4096) {
+        if (cy - 1 >= maxFreeAirY - 1 && lowCount < this.lowAirBuf.length) {
           this.lowAirBuf[lowCount++] = aboveIdx;
         }
       }
 
-      if (highCount > 0 && lowCount > 0) {
+      if (!pressureMoved && highCount > 0 && lowCount > 0) {
         const headDiff = maxFreeAirY - minSurfLiqY;
         const fluidity = Math.max(0.12, 1 - VISCOSITY_LUT[m]);
         const effectiveWidth = Math.min(highCount, lowCount);
         // Torricelli's Law scaled by channel/vessel width: Q ~ A * sqrt(2 * g * dh)
         const transferQuota = Math.min(
           effectiveWidth,
-          Math.max(2, Math.round(effectiveWidth * 0.42 * fluidity * Math.min(2.2, Math.sqrt(headDiff * (world.env.gravity / 9.81)) * 0.28)))
+          Math.max(2, Math.round(effectiveWidth * 0.42 * fluidity * Math.min(2.2, Math.sqrt(headDiff * (Math.abs(world.env.gravity) / 9.81)) * 0.28)))
         );
 
+        // Раньше шаг (t*7)%N при N, кратном 7, всегда выбирал одну и ту же
+        // клетку-донор, и вся квота переноса пропадала впустую.
+        const offset = world.randByte() % Math.max(1, Math.min(highCount, lowCount));
         for (let t = 0; t < transferQuota; t++) {
-          const srcIdx = this.highSurfBuf[(t * 7) % highCount];
-          const dstIdx = this.lowAirBuf[(t * 11) % lowCount];
+          const srcIdx = this.highSurfBuf[(t + offset) % highCount];
+          const dstIdx = this.lowAirBuf[(t * 3 + offset) % lowCount];
           if (srcIdx !== dstIdx && mat[srcIdx] === m && (mat[dstIdx] === MAT.EMPTY || STATE_LUT[mat[dstIdx]] === 4)) {
             world.swapCells(srcIdx, dstIdx);
           }
@@ -462,6 +480,7 @@ export class MechanicsSolver {
       return;
     }
 
+    let diagonalTried = false;
     if (canGoDown) {
       const below = ny * w + x;
       if (this.canDisplace(m, world.mat[below], world, i, below)) {
@@ -470,14 +489,28 @@ export class MechanicsSolver {
       }
 
       if (visc < 0.05 || world.rand() > visc * 0.55) {
+        diagonalTried = true;
         const firstDir = world.rand() < 0.5 ? -1 : 1;
         for (let k = 0; k < 2; k++) {
           const dx = k === 0 ? firstDir : -firstDir;
           const nx = x + dx;
           if (nx < 0 || nx >= w) continue;
-          if (STATE_LUT[world.mat[y * w + nx]] === 1) continue;
           const diag = ny * w + nx;
-          if (this.canDisplace(m, world.mat[diag], world, i, diag)) {
+          const diagM = world.mat[diag];
+          const sideM = world.mat[y * w + nx];
+          // Диагональ через твёрдый бок разрешена только когда под самой
+          // жидкостью есть свободный проход (жидкость огибает выступ, а не
+          // протискивается сквозь угол из двух сплошных стен) и над боковой
+          // клеткой тоже открыто. Так заполняются пустоты у кромок, но стены
+          // остаются непроницаемыми.
+          if (STATE_LUT[sideM] === 1) {
+            if (STATE_LUT[world.mat[ny * w + x]] === 1) continue;
+            const aboveSideY = y - downDir;
+            if (aboveSideY < 0 || aboveSideY >= h) continue;
+            if (STATE_LUT[world.mat[aboveSideY * w + nx]] === 1) continue;
+            if (diagM !== MAT.EMPTY && STATE_LUT[diagM] !== 4 && STATE_LUT[diagM] !== 3) continue;
+          }
+          if (this.canDisplace(m, diagM, world, i, diag)) {
             world.swapCells(i, diag);
             return;
           }
@@ -485,9 +518,13 @@ export class MechanicsSolver {
       }
     }
 
-    if (visc > 0.08 && world.rand() < visc * 0.65) return;
+    // Вязкость не должна отключать обе фазы сразу: если диагонали пропущены,
+    // горизонтальное растекание обязано отработать.
+    if (visc > 0.08 && diagonalTried && world.rand() < visc * 0.65) return;
 
-    const disp = DISPERSION_LUT[m] || 8;
+    // 0 означает «не растекаться» (например у очень густого геля), а не 8.
+    const disp = DISPERSION_LUT[m];
+    if (disp <= 0) return;
     const dirA = world.rand() < 0.5 ? -1 : 1;
     const upY = y - downDir;
 
@@ -508,7 +545,13 @@ export class MechanicsSolver {
             return;
           }
         } else if (STATE_LUT[nm] === 3 && densityAt(nm,world.temp[ni]) < rho * 0.96) {
+          // Тяжёлая жидкость должна всплывать/тонуть ЗА СЧЁТ обмена именно
+          // с этой более лёгкой клеткой, а не только с диагональю под ней.
           farthestClearIdx = ni;
+          if (this.canDisplace(m, nm, world, i, ni)) {
+            world.swapCells(i, ni);
+            return;
+          }
           if (canGoDown && this.canDisplace(m, world.mat[ny * w + nx], world, i, ny * w + nx)) {
             world.swapCells(i, ny * w + nx);
             return;
@@ -524,7 +567,10 @@ export class MechanicsSolver {
         const hasLiquidAbove = upY >= 0 && upY < h && STATE_LUT[world.mat[upY * w + x]] === 3;
 
         if (hasLiquidAbove || hasSameLeft || hasSameRight) {
-          const stepDist = hasLiquidAbove ? Math.min(disp, 4) : 1;
+          // Перенос использует реально найденную свободную дистанцию, а не 1 клетку.
+          // Ограничение 4 при жидкости сверху сохраняет ровную поверхность без «расчёсок».
+          const reach = Math.max(1, Math.min(disp, Math.abs(farthestClearIdx - i)));
+          const stepDist = Math.min(reach, 4);
           const targetX = x + dir * stepDist;
           if (targetX >= 0 && targetX < w) {
             const stepIdx = y * w + targetX;

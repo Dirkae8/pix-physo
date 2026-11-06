@@ -1,4 +1,4 @@
-import { ELEC_COND_LUT, MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
+import { ELEC_COND_LUT, MAT, MATERIAL_BY_ID, STATE_LUT, XMAT } from '../materials/registry';
 import { World } from './World';
 import { wireConnections } from './Wires';
 
@@ -113,6 +113,23 @@ export class ElectricSolver {
       } else if (m === MAT.PLASMA || m === MAT.ELECTRIC_ARC) {
         volt[i] = 56;
         cur[i] = 28;
+      } else if (m === XMAT.PIEZO) {
+        // Прямой пьезоэффект: механическое напряжение (гидростатика, удар молотом,
+        // ударная волна) порождает напряжение до 24 В.
+        const ai = world.airIdxFromCell(i % w, (i / w) | 0);
+        const load = world.stress[i] + Math.abs(world.airPressure[ai]) * 0.12;
+        volt[i] = Math.min(24, load * 1.35);
+        cur[i] = volt[i] > 2 ? 4 : 0;
+      } else if (m === XMAT.THERMOCOUPLE) {
+        // Эффект Зеебека: напряжение пропорционально градиенту температуры.
+        const x = i % w, y = (i / w) | 0;
+        const left = x > 0 ? temp[i - 1] : temp[i];
+        const right = x + 1 < w ? temp[i + 1] : temp[i];
+        const up = y > 0 ? temp[i - w] : temp[i];
+        const down = y + 1 < h ? temp[i + w] : temp[i];
+        const gradient = Math.abs(right - left) + Math.abs(down - up);
+        volt[i] = Math.min(24, gradient * 0.09);
+        cur[i] = volt[i] > 2 ? 3 : 0;
       } else {
         const c = this.effectiveConductivity(m, meta[i]);
         if (c <= 0) {
@@ -156,7 +173,8 @@ export class ElectricSolver {
         const x = i % w;
         const y = (i / w) | 0;
         // Insulated flexible wires transfer voltage between fixed endpoints.
-        for (const j of wires.get(i) || []) {
+        const connections = wires.get(i);
+        if (connections !== undefined) for (const j of connections) {
           const cj = this.effectiveConductivity(mat[j], meta[j]);
           const candV = vSrc * .98;
           if (cj > 0 && candV > volt[j] + .18) {

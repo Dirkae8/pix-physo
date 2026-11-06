@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
+import { createZipFromDir } from './zip.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -141,7 +141,9 @@ async function main() {
     '  • Shift + ЛКМ — ровная прямая стена / провод / труба',
     '  • Пробел — Пауза / Старт',
     '  • F — один шаг физики',
-    '  • R — повернуть направление Вентилятора (когда выбран Вентилятор)',
+    '  • R — повернуть направление Вентилятора / насоса / диода',
+    '  • N — показать только 100 новых предметов (повторно — все)',
+    '  • 0–7 — быстрый выбор категории каталога',
     '  • Ctrl + Z — отмена последнего действия',
     '  • Кабель — выберите две точки на проводниках; натяжение задаётся ползунком',
     '  • Миры — локальные сохранения; хранилище очищается вместе с данными приложения',
@@ -152,10 +154,12 @@ async function main() {
   ].join('\r\n');
   fs.writeFileSync(path.join(releaseDir, 'READ_ME_RU.txt'), readmeRu, 'utf8');
 
-  // Create PIXPHYSO-Release.zip in repo root
+  // Create PIXPHYSO-Release.zip in repo root. Собственный ZIP-писатель не
+  // требует установленной системной утилиты `zip` (её нет в Windows-окружении).
   const zipPath = path.join(rootDir, 'PIXPHYSO-Release.zip');
   fs.rmSync(zipPath, { force: true });
-  execFileSync('zip', ['-r', '-9', zipPath, '.'], { cwd: releaseDir, stdio: 'inherit' });
+  const packed = createZipFromDir(releaseDir, zipPath);
+  console.log(`✓ Packed ${packed} files into the release archive`);
 
   // Also place standalone PIXPHYSO.html in root AND both in public/ for 1-click download from Live Preview!
   fs.copyFileSync(htmlOutPath, path.join(rootDir, 'PIXPHYSO.html'));

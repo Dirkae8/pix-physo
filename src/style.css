@@ -469,12 +469,15 @@ input[type='range']::-webkit-slider-thumb {
 
 .selected-mat-banner {
   margin-left: auto;
-  font-size: 11.5px;
-  color: #bebebe;
+  font-size: 11px;
+  color: #c9c9c9;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 420px;
+  font-variant-numeric: tabular-nums;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-subtle);
 }
 
 .items-strip {
@@ -520,6 +523,32 @@ input[type='range']::-webkit-slider-thumb {
   box-shadow: 0 0 0 2px rgba(146, 146, 146, 0.45), 0 6px 16px rgba(0, 0, 0, 0.5);
 }
 
+.item-card:focus-visible,
+.mini-btn:focus-visible,
+.cat-btn:focus-visible,
+.btn:focus-visible {
+  outline: 1px solid #e5e5e5;
+  outline-offset: 2px;
+}
+
+/* Метка новых предметов — без цвета, чтобы не ломать ч/б минимализм. */
+.item-new {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 2;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  border: 1px solid rgba(230, 230, 230, 0.55);
+  background: rgba(8, 8, 8, 0.82);
+  color: #e8e8e8;
+  pointer-events: none;
+}
+
 .item-thumb {
   width: 100%;
   height: 68px;
@@ -553,6 +582,8 @@ input[type='range']::-webkit-slider-thumb {
 .item-sub {
   font-size: 9.5px;
   color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
 }
 
 /* Bottom-Right Category Selector Matrix */

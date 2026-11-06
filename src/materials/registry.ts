@@ -1,4 +1,22 @@
 import { CategoryId, MaterialDef } from '../types/physics';
+import {
+  buildExpansionMaterials,
+  EXPANSION_EXPLOSIVE_IDS,
+  EXPANSION_LIQUID_IDS,
+  EXPANSION_SELECTABLE_IDS,
+  EXPANSION_TOOL_IDS,
+  XMAT,
+  XSTATE,
+} from './expansion';
+
+export {
+  EXPANSION_EXPLOSIVE_IDS,
+  EXPANSION_LIQUID_IDS,
+  EXPANSION_SELECTABLE_IDS,
+  EXPANSION_TOOL_IDS,
+  XMAT,
+  XSTATE,
+};
 
 export const MAT = {
   EMPTY: 0,
@@ -164,7 +182,12 @@ export const MAT = {
   GROUND: 144,
 } as const;
 
-export const MAX_MAT_ID = 160;
+/**
+ * Поле мира хранит id вещества в Uint8Array, поэтому верхняя граница — 255.
+ * 0..144 занято базовым каталогом, 145..244 — 100 новых предметов,
+ * 245..250 — скрытые продукты реакций, 251..255 зарезервированы.
+ */
+export const MAX_MAT_ID = 256;
 
 export interface CategoryMeta {
   id: CategoryId;
@@ -2647,6 +2670,9 @@ RAW_MATERIALS.push(
   {...clone(MAT.TOOL_COOL), id: MAT.TOOL_EXTINGUISHER, key: 'extinguisher', name: 'Огнетушитель', shortDesc: 'Охлаждает область и вытесняет огонь углекислым газом.', selectable: true, category: 'tools', baseColor: [220,72,72]},
   {...clone(MAT.STEAM), id: MAT.WATER_VAPOR, key: 'water_vapor', name: 'Водяной пар', shortDesc: 'Испарённая вода; конденсируется на холодных поверхностях.', selectable: false, freezeTempC: undefined, freezeInto: undefined, density: .7, baseColor: [185,207,225]}
 );
+
+// 100 новых предметов и 6 скрытых продуктов реакций (id 145..250).
+RAW_MATERIALS.push(...buildExpansionMaterials(clone, MAT));
 
 export const MATERIAL_BY_ID: MaterialDef[] = new Array(MAX_MAT_ID);
 for (let i = 0; i < MAX_MAT_ID; i++) {

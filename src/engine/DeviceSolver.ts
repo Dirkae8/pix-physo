@@ -1,6 +1,8 @@
 import { MAT, STATE_LUT } from '../materials/registry';
 import { World } from './World';
 
+const VENT_DIRS: ReadonlyArray<readonly [number, number]> = [[0, -1], [1, 0], [-1, 0], [0, 1]];
+
 /** Discrete one-cell actuators. Direction is encoded in the low two meta bits. */
 export class DeviceSolver {
   public step(world: World): void {
@@ -10,7 +12,7 @@ export class DeviceSolver {
       if (type === MAT.GAS_CYLINDER) {
         const charge = world.meta[i]&127, opened = (world.meta[i]&128) !== 0;
         if (opened && charge > 0 && world.rand() < .15) {
-          for (const [dx,dy] of [[0,-1],[1,0],[-1,0],[0,1]]) {
+          for (const [dx,dy] of VENT_DIRS) {
             const nx=x+dx, ny=y+dy, j=ny*w+nx;
             if (world.inBounds(nx,ny) && mat[j] === MAT.EMPTY) {
               world.setCell(nx,ny,MAT.CO2, world.temp[i] - 2);

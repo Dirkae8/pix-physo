@@ -1,5 +1,5 @@
 import { BrushShape, GameSettings } from '../types/physics';
-import { ELEC_COND_LUT, MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
+import { ELEC_COND_LUT, MAT, MATERIAL_BY_ID, STATE_LUT, TENSILE_LUT, XMAT } from '../materials/registry';
 import { AirSolver } from './AirSolver';
 import { ChemistrySolver } from './ChemistrySolver';
 import { DeviceSolver } from './DeviceSolver';
@@ -79,8 +79,10 @@ export class SimulationEngine {
       stepWires(this.world);
       this.airSolver.step(this.world, isBalance ? 4 : 2);
       this.surfaceWaveSolver.step(this.world);
-      this.thermalSolver.step(this.world);
-      if (isBalance) this.thermalSolver.step(this.world);
+      this.thermalSolver.step(this.world, true);
+      // Второй проход в режиме «Баланс» уточняет только теплопроводность:
+      // повторные фазовые переходы делали бы кипение нереалистично быстрым.
+      if (isBalance) this.thermalSolver.step(this.world, false);
       this.electricSolver.step(this.world, isBalance ? 8 : 5);
       this.currentSolver.step(this.world);
       this.deviceSolver.step(this.world);
@@ -156,6 +158,59 @@ export class SimulationEngine {
   ): void {
     const world = this.world;
     const r = Math.max(0, radius);
+
+    // ---- Четыре новых инструмента расширения каталога ----
+    if (matId === XMAT.TOOL_MAGNET) {
+      this.forEachBrushCell(cx, cy, r + 8, 'circle', (x, y, falloff) => {
+        const i = y * world.width + x, m = world.mat[i];
+        if (m !== MAT.IRON_FILINGS && m !== XMAT.TITANIUM_FILINGS && m !== XMAT.GRAPHITE_DUST) return;
+        const dx = cx - x, dy = cy - y, len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+        const pull = 2.6 * falloff * Math.min(1, 8 / len);
+        world.vx[i] += (dx / len) * pull;
+        world.vy[i] += (dy / len) * pull;
+      });
+      return;
+    }
+
+    if (matId === XMAT.TOOL_VACUUM) {
+      this.forEachBrushCell(cx, cy, r + 2, 'circle', (x, y, falloff) => {
+        const i = y * world.width + x, st = STATE_LUT[world.mat[i]];
+        if (st === 4 || st === 5) {
+          if (world.rand() < 0.35 + 0.6 * falloff) world.mat[i] = MAT.EMPTY;
+        }
+        world.airPressure[world.airIdxFromCell(x, y)] -= 0.6 * falloff;
+      });
+      return;
+    }
+
+    if (matId === XMAT.TOOL_HAMMER) {
+      this.forEachBrushCell(cx, cy, r, 'circle', (x, y, falloff) => {
+        const i = y * world.width + x, m = world.mat[i];
+        if (STATE_LUT[m] !== 1) return;
+        world.stress[i] += 55 * falloff;
+        if (world.stress[i] > TENSILE_LUT[m] && world.rand() < 0.35 * falloff) {
+          world.fractureCell(i, x - cx, y - cy, Math.max(1, Math.hypot(x - cx, y - cy)), 1.2 * falloff);
+          world.stress[i] = 0;
+        }
+      });
+      return;
+    }
+
+    if (matId === XMAT.TOOL_DRYER) {
+      this.forEachBrushCell(cx, cy, r, 'circle', (x, y, falloff) => {
+        const i = y * world.width + x;
+        world.temp[i] = Math.min(320, world.temp[i] + 18 * falloff);
+        if (world.wetness[i] > 0) {
+          world.wetness[i] = Math.max(0, world.wetness[i] - Math.round(70 * falloff));
+          if (world.wetness[i] === 0) world.absorbedMat[i] = 0;
+        }
+        if (y > 0 && world.mat[i] === MAT.WATER && world.mat[i - world.width] === MAT.EMPTY &&
+            world.rand() < 0.04 * falloff) {
+          world.setCell(x, y - 1, MAT.WATER_VAPOR, world.temp[i]);
+        }
+      });
+      return;
+    }
 
     if (isErase || matId === MAT.TOOL_ERASER) {
       this.forEachBrushCell(cx, cy, r, shape, (x, y) => {

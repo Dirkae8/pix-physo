@@ -1,4 +1,5 @@
 import type { World } from './World';
+import { MAX_MAT_ID } from '../materials/registry';
 import type { EnvironmentConfig, SensorPin } from '../types/physics';
 import type { HangingWire } from './Wires';
 import type { Wheel, MechanicalSpring } from './MechanicalSystem';
@@ -46,6 +47,12 @@ export async function loadWorld(world: World, name: string): Promise<void> {
     if ((field === 'airOxygen' || field.startsWith('wave')) && arr === undefined) continue; // saves created before oxygen was tracked
     if (!(arr instanceof Uint8Array || arr instanceof Float32Array) || arr.length !== expected) throw new Error('Повреждённые данные поля');
   }
+  // Старые миры (id ≤ 144) совместимы; новые вещества обязаны лежать в
+  // диапазоне таблицы материалов, иначе чтение приведёт к неверному веществу.
+  const savedMat = save.fields.mat;
+  if (savedMat) for (let k = 0; k < savedMat.length; k++) {
+    if (savedMat[k] >= MAX_MAT_ID) throw new Error('Сохранение содержит неизвестное вещество');
+  }
   world.resize(save.width, save.height);
   world.resetUndoHistory(); world.stamp.fill(0); world.releaseHand(true);
   for (const field of FIELDS) {
@@ -87,6 +94,7 @@ export async function getTemplate(name: string): Promise<Template> {
   const t = await transaction<Template | undefined>('readonly', store => store.get(name), 'templates');
   if (!t || !Number.isInteger(t.width) || !Number.isInteger(t.height) || t.width < 1 || t.height < 1 || t.width > 2000 || t.height > 2000) throw new Error('Повреждённая схема');
   for (const key of TEMPLATE_FIELDS) if (!(t.fields?.[key] instanceof Uint8Array || t.fields?.[key] instanceof Float32Array) || t.fields[key].length !== t.width*t.height) throw new Error('Повреждённые данные схемы');
+  for (let k = 0; k < t.fields.mat.length; k++) if (t.fields.mat[k] >= MAX_MAT_ID) throw new Error('Схема содержит неизвестное вещество');
   return t;
 }
 export async function deleteTemplate(name: string): Promise<void> { await transaction('readwrite', store => store.delete(name), 'templates'); }

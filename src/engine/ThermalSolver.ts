@@ -3,9 +3,20 @@ import {
   MAX_MAT_ID,
   MATERIAL_BY_ID,
   SPECIFIC_HEAT_LUT,
+  STATE_LUT,
   THERMAL_COND_LUT,
+  XMAT,
 } from '../materials/registry';
 import { World } from './World';
+
+/** Водные растворы кипят медленно: у них большая скрытая теплота парообразования. */
+const AQUEOUS_LUT = new Uint8Array(MAX_MAT_ID);
+for (const id of [
+  MAT.WATER, MAT.SALTWATER, MAT.SEAWATER,
+  XMAT.CHICKEN_BROTH, XMAT.MILK, XMAT.VINEGAR, XMAT.SOY_SAUCE,
+  XMAT.BEER, XMAT.RED_WINE, XMAT.COFFEE_DRINK, XMAT.CONDENSED_MILK,
+  XMAT.ORANGE_JUICE, XMAT.MAPLE_SYRUP, XMAT.LIQUID_SOAP,
+]) AQUEOUS_LUT[id] = 1;
 
 // Symmetric interface conductivity depends only on material IDs, not on the frame.
 const INTERFACE_COND = new Float32Array(MAX_MAT_ID * MAX_MAT_ID);
@@ -40,7 +51,13 @@ export class ThermalSolver {
     return 1 / invT - 273.15;
   }
 
-  public step(world: World): void {
+  /**
+   * @param runPhase — выполнять фазовые переходы. В режиме «Баланс» решатель
+   * вызывается дважды за такт для дополнительной тепловой релаксации, но
+   * плавление/кипение/конденсация должны случаться только один раз, иначе
+   * жидкости кипят в несколько раз быстрее, чем положено по времени симуляции.
+   */
+  public step(world: World, runPhase = true): void {
     this.ensureSize(world.size);
 
     const w = world.width;
@@ -158,13 +175,13 @@ export class ThermalSolver {
     // Air/gases are transparent; the first solid or liquid absorbs the ray.
     if ((world.stepTick & 7) === 0) for (let y=0; y<h; y++) for (let x=0; x<w; x++) {
       const i=y*w+x, id=mat[i], t=temp[i];
-      if (!id || t < 300 || MATERIAL_BY_ID[id].state === 'gas') continue;
+      if (!id || t < 300 || STATE_LUT[id] === 4) continue;
       for (let d=0; d<4; d++) {
         const dx=d===0?1:d===1?-1:0, dy=d===2?1:d===3?-1:0;
         for (let k=1; k<=12; k++) {
           const nx=x+dx*k, ny=y+dy*k; if (nx<0||nx>=w||ny<0||ny>=h) break;
           const j=ny*w+nx, target=mat[j];
-          if (!target || MATERIAL_BY_ID[target].state === 'gas') continue;
+          if (!target || STATE_LUT[target] === 4) continue;
           const diff=temp[i]-temp[j];
           if (diff>0) {
             const ca=SPECIFIC_HEAT_LUT[id] || 1, cb=SPECIFIC_HEAT_LUT[target] || 1;
@@ -175,6 +192,8 @@ export class ThermalSolver {
         }
       }
     }
+
+    if (!runPhase) return;
 
     if (basePKPa !== this.lastBoilPressure) {
       for (let id = 1; id < MAX_MAT_ID; id++) {
@@ -236,8 +255,10 @@ export class ThermalSolver {
             const superheat = t - effBoilC;
             // At atmospheric pressure water needs time and latent heat to vaporise.
             // Low-pressure flashing remains faster because the boiling point is much lower.
-            const waterAtPressure = (m === MAT.WATER || m === MAT.SALTWATER || m === MAT.SEAWATER) && basePKPa >= 20;
-            const boilChance = waterAtPressure ? Math.min(0.12, 0.018 + superheat * 0.003) : Math.min(0.8, 0.14 + superheat * 0.03);
+            const waterAtPressure = AQUEOUS_LUT[m] === 1 && basePKPa >= 20;
+            // Латентная теплота: при атмосферном давлении вода испаряется постепенно,
+            // а не превращается в пар за 2–3 такта. Вакуумное вскипание остаётся быстрым.
+            const boilChance = waterAtPressure ? Math.min(0.045, 0.006 + superheat * 0.0012) : Math.min(0.8, 0.14 + superheat * 0.03);
             if (world.rand() < boilChance) {
               if (m === MAT.SALTWATER && world.rand() < 0.28) {
                 mat[i] = MAT.SALT;

@@ -1,6 +1,14 @@
 import { ELEC_COND_LUT, MAT } from '../materials/registry';
 import { World } from './World';
 
+// Вынесены из BFS: раньше на каждую клетку × 8 соседей создавались две замыкания.
+function forwardComponent(dir: number, dx: number, dy: number): number {
+  return dir === 0 ? -dx : dir === 1 ? -dy : dir === 2 ? dx : dy;
+}
+function axialOk(id: number, v: number, dx: number, dy: number): boolean {
+  return id !== MAT.RELAY || ((v & 1) === 0 ? dy === 0 : dx === 0);
+}
+
 /** A discrete return-terminal path estimate, supplementing the scalar potential solver.
  * Uses the shortest connected path, not a full Kirchhoff network solution. */
 export class CurrentSolver {
@@ -44,10 +52,9 @@ export class CurrentSolver {
           if(this.seen[j] || !this.conductivity(n,meta[j]) || this.isolated(m,n)) continue;
           if(dx && dy && (mat[y*w+x+dx]===MAT.RELAY || mat[(y+dy)*w+x]===MAT.RELAY)) continue;
           // BFS proceeds from return to source, opposite to forward current.
-          const forward=(dir:number) => dir===0 ? -dx : dir===1 ? -dy : dir===2 ? dx : dy;
-          if ((m===MAT.DIODE && forward(meta[i]&3)<=0) || (n===MAT.DIODE && forward(meta[j]&3)<=0)) continue;
-          const axial=(id:number, v:number) => id!==MAT.RELAY || ((v&1)===0 ? dy===0 : dx===0);
-          if(!axial(m,meta[i]) || !axial(n,meta[j])) continue;
+          if ((m===MAT.DIODE && forwardComponent(meta[i]&3,dx,dy)<=0) ||
+              (n===MAT.DIODE && forwardComponent(meta[j]&3,dx,dy)<=0)) continue;
+          if(!axialOk(m,meta[i],dx,dy) || !axialOk(n,meta[j],dx,dy)) continue;
           this.seen[j]=1; this.parent[j]=i; this.queue[tail++]=j;
         }
       }

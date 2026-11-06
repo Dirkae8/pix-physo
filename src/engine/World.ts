@@ -464,14 +464,16 @@ export class World {
 
     // Inject shockwave overpressure and radial blast velocity into Air Grid
     const airR = Math.max(2, Math.ceil(radius / this.airScale) + 2);
+    const airR2 = airR * airR;
     const acx = cx / this.airScale;
     const acy = cy / this.airScale;
     for (let ay = Math.max(0, Math.floor(acy - airR)); ay <= Math.min(this.airH - 1, Math.ceil(acy + airR)); ay++) {
       for (let ax = Math.max(0, Math.floor(acx - airR)); ax <= Math.min(this.airW - 1, Math.ceil(acx + airR)); ax++) {
         const dx = ax - acx;
         const dy = ay - acy;
-        const dist = Math.hypot(dx, dy);
-        if (dist <= airR) {
+        const dist2 = dx * dx + dy * dy;
+        if (dist2 <= airR2) {
+          const dist = Math.sqrt(dist2);
           const falloff = 1 - dist / (airR + 0.5);
           const ai = ay * this.airW + ax;
           this.airPressure[ai] += power * 420 * falloff * falloff;

@@ -1,4 +1,4 @@
-import { MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
+import { MAT, STATE_LUT, TENSILE_LUT } from '../materials/registry';
 import { World } from './World';
 
 export class AirSolver {
@@ -284,6 +284,8 @@ export class AirSolver {
 
         const gradX = p[ai - 1] - p[ai + 1];
         const gradY = p[ai - aw] - p[ai + aw];
+        // Геометрия удара одинакова для всех 16 пикселей ячейки: считаем один раз.
+        const gradLen = Math.sqrt(gradX * gradX + gradY * gradY) || 1;
         const cx0 = ax << 2;
         const cy0 = ay << 2;
 
@@ -296,10 +298,9 @@ export class AirSolver {
             const ci = y * w + x;
             const m = mat[ci];
             if (STATE_LUT[m] !== 1 || m === MAT.FAN) continue;
-            const def = MATERIAL_BY_ID[m];
             world.stress[ci] = Math.max(world.stress[ci], maxNeighborP);
-            if (maxNeighborP > def.tensileStrength) {
-              world.fractureCell(ci, gradX, gradY, Math.hypot(gradX, gradY) || 1, maxNeighborP * 0.012);
+            if (maxNeighborP > TENSILE_LUT[m]) {
+              world.fractureCell(ci, gradX, gradY, gradLen, maxNeighborP * 0.012);
             }
           }
         }

@@ -35,7 +35,7 @@ export function stepWires(world: World): void {
     for (let pass = 0; pass < 10; pass++) {
       for (let n = 0; n < last; n++) {
         const a = p[n], b = p[n + 1], dx = b.x - a.x, dy = b.y - a.y;
-        const d = Math.hypot(dx, dy) || 1, error = (d - segment) / d;
+        const d = Math.sqrt(dx * dx + dy * dy) || 1, error = (d - segment) / d;
         const aWeight = n === 0 ? 0 : n + 1 === last ? 1 : .5;
         const bWeight = n + 1 === last ? 0 : n === 0 ? 1 : .5;
         a.x += dx * error * aWeight; a.y += dy * error * aWeight;

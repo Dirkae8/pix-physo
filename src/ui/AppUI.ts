@@ -9,9 +9,11 @@ import { ThermalSolver } from '../engine/ThermalSolver';
 import { GpuPipeline } from '../gpu/GpuPipeline';
 import {
   CATEGORIES,
+  EXPANSION_SELECTABLE_IDS,
   MAT,
   MATERIAL_BY_ID,
   SELECTABLE_MATERIALS,
+  XMAT,
 } from '../materials/registry';
 import {
   BoundaryMode,
@@ -20,6 +22,7 @@ import {
   DisplayMode,
   FanDirection,
   GameSettings,
+  MaterialDef,
 } from '../types/physics';
 import { getMaterialThumbnailUrl } from './ThumbnailRenderer';
 import { WindCompass } from './WindCompass';
@@ -49,6 +52,7 @@ export class AppUI {
 
   private selectedCategory: CategoryId = 'all';
   private searchQuery = '';
+  private newOnly = false;
   private selectedMatId: number = MAT.SAND;
   private brushRadius = 5;
   private brushShape: BrushShape = 'circle';
@@ -310,7 +314,7 @@ export class AppUI {
             </div>
             <footer class="status-bar">
               <div class="probe-readout" id="probeReadout">
-                Наведите курсор на поле · ЛКМ — рисовать / нажимать кнопки и тумблеры · ПКМ — ластик · Shift — прямая линия
+                ЛКМ — рисовать · ПКМ — ластик · Shift — линия · Пробел — пауза · F — шаг · Ctrl+Z — отмена · R — направление · N — новинки · 0–7 — категории
               </div>
               <div class="telemetry-readout" id="telemetryReadout">
                 CPU физика · GPU рендер
@@ -337,6 +341,7 @@ export class AppUI {
               <button class="mini-btn" id="btnWire" title="Две точки на проводниках">Кабель</button>
               <label class="brush-inline" title="Натяжение нового кабеля">Натяжение <input id="rngWire" type="range" min="0" max="100" value="50" style="width:70px" /></label>
               <button class="mini-btn" id="btnClearWires" title="Удалить все кабели">× кабели</button>
+              <button class="mini-btn" id="btnNewOnly" title="Показать только 100 новых предметов (клавиша N)">+100 новых</button>
               <input
                 type="text"
                 class="search-input"
@@ -590,13 +595,40 @@ export class AppUI {
     }
   }
 
+  /** Краткая физическая карточка вещества для подсказки и строки выбранного предмета. */
+  private materialFacts(def: MaterialDef): string {
+    const parts: string[] = [];
+    if (def.density > 0) parts.push(`${def.density} кг/м³`);
+    if (def.meltTempC !== undefined) parts.push(`плавл. ${def.meltTempC} °C`);
+    if (def.boilTempC !== undefined) parts.push(`кип. ${def.boilTempC} °C`);
+    if (def.freezeTempC !== undefined) parts.push(`замерз. ${def.freezeTempC} °C`);
+    if (def.flammability > 0) parts.push(`горючесть ${Math.round(def.flammability * 100)} %`);
+    if (def.elecCond > 0) parts.push(`проводимость ${Math.round(def.elecCond * 100)} %`);
+    if (def.tensileStrength > 0) parts.push(`прочность ${def.tensileStrength} кПа`);
+    return parts.join(' · ');
+  }
+
+  private toggleNewOnly(): void {
+    this.newOnly = !this.newOnly;
+    const btn = this.root.querySelector('#btnNewOnly') as HTMLButtonElement;
+    btn.classList.toggle('active', this.newOnly);
+    btn.textContent = this.newOnly ? 'Все предметы' : '+100 новых';
+    this.renderItemsStrip();
+  }
+
   private renderItemsStrip(): void {
     const q = this.searchQuery.trim().toLowerCase();
     const filtered = SELECTABLE_MATERIALS.filter((m) => {
       if (this.selectedCategory !== 'all' && m.category !== this.selectedCategory) return false;
+      if (this.newOnly && !EXPANSION_SELECTABLE_IDS.has(m.id)) return false;
       if (q && !m.name.toLowerCase().includes(q) && !m.shortDesc.toLowerCase().includes(q)) return false;
       return true;
     });
+
+    const searchInput = this.root.querySelector('#inpSearch') as HTMLInputElement | null;
+    if (searchInput) {
+      searchInput.placeholder = `Поиск из ${SELECTABLE_MATERIALS.length} · показано ${filtered.length}`;
+    }
 
     this.thumbnailObserver?.disconnect();
     if (this.thumbnailFrame) cancelAnimationFrame(this.thumbnailFrame);
@@ -612,9 +644,11 @@ export class AppUI {
     }, { root: this.itemsStripEl, rootMargin: '100px' });
     this.itemsStripEl.innerHTML = '';
     for (const def of filtered) {
+      const isNew = EXPANSION_SELECTABLE_IDS.has(def.id);
       const card = document.createElement('button');
-      card.className = `item-card ${def.id === this.selectedMatId ? 'active' : ''}`;
-      card.title = `${def.name} — ${def.shortDesc}`;
+      card.className = `item-card ${def.id === this.selectedMatId ? 'active' : ''} ${isNew ? 'is-new' : ''}`;
+      const facts = this.materialFacts(def);
+      card.title = `${def.name}\n${def.shortDesc}${facts ? `\n${facts}` : ''}`;
 
 
       const subText =
@@ -628,6 +662,7 @@ export class AppUI {
 
       card.innerHTML = `
         <img class="item-thumb" data-mat="${def.id}" alt="" draggable="false" />
+        ${isNew ? '<span class="item-new">NEW</span>' : ''}
         <div class="item-meta">
           <div class="item-name">${def.name}</div>
           <div class="item-sub">${subText}</div>
@@ -654,7 +689,8 @@ export class AppUI {
 
   private updateSelectedBanner(): void {
     const def = MATERIAL_BY_ID[this.selectedMatId];
-    this.selectedBannerEl.textContent = `${def.name}: ${def.shortDesc}`;
+    const facts = this.materialFacts(def);
+    this.selectedBannerEl.textContent = `${def.name}: ${def.shortDesc}${facts ? `  ·  ${facts}` : ''}`;
   }
 
   private markCustomPreset(): void {
@@ -938,6 +974,8 @@ export class AppUI {
       this.searchQuery = (e.target as HTMLInputElement).value;
       this.renderItemsStrip();
     });
+    const newOnlyBtn = this.root.querySelector('#btnNewOnly') as HTMLButtonElement;
+    newOnlyBtn.addEventListener('click', () => this.toggleNewOnly());
 
     const rngBrush = this.root.querySelector('#rngBrush') as HTMLInputElement;
     const valBrush = this.root.querySelector('#valBrush')!;
@@ -1392,29 +1430,66 @@ export class AppUI {
   }
 
   private bindKeyboard(): void {
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Shift') this.shiftHeld = true;
-      if (document.activeElement?.tagName === 'INPUT') return;
+    // Раньше проверялся только тег INPUT: после любого ползунка или чекбокса
+    // фокус оставался на нём и пробел/F/Ctrl+Z переставали работать, зато
+    // пробел в выпадающем списке одновременно открывал список и ставил паузу.
+    const isTextEntry = (el: Element | null): boolean => {
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable) return true;
+      if (tag !== 'INPUT') return false;
+      const type = (el as HTMLInputElement).type;
+      return type === 'text' || type === 'search' || type === 'number' || type === 'password' ||
+        type === 'email' || type === 'url' || type === 'tel';
+    };
+    const modalOpen = (): boolean => !!this.root.querySelector('.modal-backdrop:not(.hidden)');
 
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Shift') { this.shiftHeld = true; return; }
+      if (e.repeat) return; // удержание пробела больше не дёргает паузу, Ctrl+Z не съедает всю историю
+
+      // Глобальная комбинация с модификатором — только отмена действия.
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'z' && !isTextEntry(document.activeElement)) {
+          e.preventDefault();
+          this.engine.world.popUndo();
+        }
+        return;
+      }
+      if (isTextEntry(document.activeElement) || modalOpen()) return;
+
+      const key = e.key.toLowerCase();
       if (e.code === 'Space') {
         e.preventDefault();
         (this.root.querySelector('#btnPlayPause') as HTMLButtonElement).click();
-      } else if (e.code === 'KeyF') {
+      } else if (key === 'f') {
         (this.root.querySelector('#btnStep') as HTMLButtonElement).click();
-      } else if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
-        e.preventDefault();
-        this.engine.world.popUndo();
-      } else if (e.code === 'KeyR' && [MAT.FAN, MAT.PUMP, MAT.VALVE, MAT.DIODE, MAT.RELAY, MAT.COMPRESSOR, MAT.VACUUM_PUMP].some(id => id === this.selectedMatId)) {
+      } else if (key === 'n') {
+        this.toggleNewOnly();
+      } else if (key === 'r' && [
+        MAT.FAN, MAT.PUMP, MAT.VALVE, MAT.DIODE, MAT.RELAY, MAT.COMPRESSOR, MAT.VACUUM_PUMP,
+        XMAT.PIEZO, XMAT.THERMOCOUPLE,
+      ].some(id => id === this.selectedMatId)) {
         this.engine.world.activeFanDir = ((this.engine.world.activeFanDir + 1) & 3) as FanDirection;
         this.root.querySelectorAll<HTMLButtonElement>('#fanDirBar [data-fandir]').forEach((b) => {
           b.classList.toggle('active', Number(b.dataset.fandir) === this.engine.world.activeFanDir);
         });
+      } else if (e.key >= '0' && e.key <= '7' && e.key.length === 1) {
+        // 0 — все предметы, 1..7 — быстрый переход к категории каталога.
+        const cat = CATEGORIES[Number(e.key)];
+        if (cat) {
+          this.selectedCategory = cat.id;
+          this.renderCategories();
+          this.renderItemsStrip();
+        }
       }
     });
 
     window.addEventListener('keyup', (e) => {
       if (e.key === 'Shift') this.shiftHeld = false;
     });
+    // После Alt+Tab залипший Shift больше не превращает каждую линию в «прямую».
+    window.addEventListener('blur', () => { this.shiftHeld = false; });
   }
 
   private drawHudOverlay(): void {
