@@ -9,7 +9,8 @@ export class DeviceSolver {
     const {width: w, height: h, mat} = world;
     for (let y = 1; y < h - 1; y++) {
       if (!world.rowActive[y]) continue;
-      for (let x = 1; x < w - 1; x++) {
+      const x0 = Math.max(1, world.rowMinX[y]), x1 = Math.min(w - 2, world.rowMaxX[y]);
+      for (let x = x0; x <= x1; x++) {
       const i = y * w + x, type = mat[i];
       if (type === MAT.GAS_CYLINDER) {
         const charge = world.meta[i]&127, opened = (world.meta[i]&128) !== 0;

@@ -64,7 +64,13 @@ export class ElectricSolver {
     this.inActive.fill(0);
 
     // 1. Decay residual voltages & seed active voltage sources onto wavefront frontier!
-    for (let i = 0; i < world.size; i++) {
+    // Сканируем только активные строки и столбцы: пустое небо не трогаем.
+    for (let y = 0; y < h; y++) {
+      if (!world.rowActive[y]) continue;
+      const row = y * w;
+      const x0 = world.rowMinX[y], x1 = world.rowMaxX[y];
+      for (let x = x0; x <= x1; x++) {
+      const i = row + x;
       const m = mat[i];
       if (m === MAT.EMPTY) {
         volt[i] = 0;
@@ -137,6 +143,7 @@ export class ElectricSolver {
         this.inActive[i] = 1;
       } else {
         cur[i] *= 0.6;
+      }
       }
     }
 

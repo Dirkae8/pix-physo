@@ -17,6 +17,8 @@ export class MechanicsSolver {
   private visitGen = 0;
   private bfsQueue: Int32Array;
   private compCells: Int32Array;
+  private compX: Int32Array;
+  private compY: Int32Array;
   private highSurfBuf: Int32Array;
   private lowAirBuf: Int32Array;
 
@@ -24,6 +26,8 @@ export class MechanicsSolver {
     this.visited = new Uint16Array(size);
     this.bfsQueue = new Int32Array(size);
     this.compCells = new Int32Array(size);
+    this.compX = new Int32Array(size);
+    this.compY = new Int32Array(size);
     this.highSurfBuf = new Int32Array(size);
     this.lowAirBuf = new Int32Array(size);
   }
@@ -33,6 +37,8 @@ export class MechanicsSolver {
       this.visited = new Uint16Array(size);
       this.bfsQueue = new Int32Array(size);
       this.compCells = new Int32Array(size);
+      this.compX = new Int32Array(size);
+      this.compY = new Int32Array(size);
       // Буферы поверхностей раньше были фиксированными на 4096 ячеек: в мире
       // 960×540 компонент жидкости может быть больше, и часть переноса терялась.
       this.highSurfBuf = new Int32Array(size);
@@ -71,10 +77,15 @@ export class MechanicsSolver {
     const yEnd = downDir > 0 ? -1 : h;
     const yStep = downDir > 0 ? -1 : 1;
 
-    for (let y = yStart; y !== yEnd; y += yStep) {
-      if (!world.rowActive[y]) continue;
+    if (world.hasMobiles) for (let y = yStart; y !== yEnd; y += yStep) {
+      if (!world.rowActive[y] || !world.rowHasMobiles[y]) continue;
       const flipX = ((y + tick) & 1) === 1;
-      for (let rawX = 0; rawX < w; rawX++) {
+      const x0 = world.rowMinX[y], x1 = world.rowMaxX[y];
+      // При зеркальном обходе диапазон тоже отражается, иначе сканируются
+      // не те столбцы и часть вещества перестаёт обрабатываться.
+      const rawLo = flipX ? w - 1 - x1 : x0;
+      const rawHi = flipX ? w - 1 - x0 : x1;
+      for (let rawX = rawLo; rawX <= rawHi; rawX++) {
         const x = flipX ? w - 1 - rawX : rawX;
         const i = y * w + x;
         const m = mat[i];
@@ -88,18 +99,21 @@ export class MechanicsSolver {
       }
     }
 
-    for (let y = 0; y < h; y++) {
-      if (!world.rowActive[y]) continue;
+    // Газы/энергия поднимаются вверх; если их в мире нет, второй проход
+    // (полный скан мира) не нужен вовсе.
+    if (world.hasGases) for (let y = 0; y < h; y++) {
+      if (!world.rowActive[y] || !world.rowHasGases[y]) continue;
       const flipX = ((y + tick + 1) & 1) === 1;
-      for (let rawX = 0; rawX < w; rawX++) {
+      const x0 = world.rowMinX[y], x1 = world.rowMaxX[y];
+      const rawLo = flipX ? w - 1 - x1 : x0;
+      const rawHi = flipX ? w - 1 - x0 : x1;
+      for (let rawX = rawLo; rawX <= rawHi; rawX++) {
         const x = flipX ? w - 1 - rawX : rawX;
         const i = y * w + x;
         const m = mat[i];
         const st = STATE_LUT[m];
         if ((st !== 4 && st !== 5) || stamp[i] === tick) continue;
-        if (st === 4 || st === 5) {
-          this.stepGasOrEnergy(world, x, y, i, m, tick);
-        }
+        this.stepGasOrEnergy(world, x, y, i, m, tick);
       }
     }
 
@@ -125,7 +139,12 @@ export class MechanicsSolver {
     }
     const hasPressureVariation=highAirPressure-lowAirPressure>1;
 
-    for (let startIdx = 0; startIdx < world.size; startIdx++) {
+    for (let y = 0; y < h; y++) {
+      if (!world.rowActive[y] || !world.rowHasMobiles[y]) continue;
+      const row = y * w;
+      const x0 = world.rowMinX[y], x1 = world.rowMaxX[y];
+      for (let sx = x0; sx <= x1; sx++) {
+        const startIdx = row + sx;
       if (vis[startIdx] === gen) continue;
       const m = mat[startIdx];
       if (STATE_LUT[m] !== 3) {
@@ -143,11 +162,15 @@ export class MechanicsSolver {
       let minSurfLiqY = h;
       let maxFreeAirY = -1;
 
+      const compX = this.compX, compY = this.compY;
       while (qHead < qTail) {
         const ci = queue[qHead++];
-        comp[compLen++] = ci;
+        comp[compLen] = ci;
         const cx = ci % w;
         const cy = (ci / w) | 0;
+        compX[compLen] = cx;
+        compY[compLen] = cy;
+        compLen++;
 
         // Check if this liquid cell has free air/gas directly above it
         if (cy > 0) {
@@ -199,7 +222,7 @@ export class MechanicsSolver {
         const gSign = world.env.gravity >= 0 ? 1 : -1;
         let donor=-1, receiver=-1, high=-Infinity, low=Infinity, maxPressure=-Infinity, minPressure=Infinity;
         for (let k=0; k<compLen; k++) {
-          const ci=comp[k], cx=ci%w, cy=(ci/w)|0;
+          const ci=comp[k], cx=compX[k], cy=compY[k];
           if (cy<=0 || cy+1>=h || mat[ci+w]!==m) continue;
           const above=mat[ci-w]; if (above!==MAT.EMPTY && STATE_LUT[above]!==4) continue;
           const pressure=world.airPressure[world.airIdxFromCell(cx,cy-1)];
@@ -219,8 +242,7 @@ export class MechanicsSolver {
         const rhoScale = DENSITY_LUT[m] * 0.0025 * (Math.abs(world.env.gravity) / 9.81);
         for (let k = 0; k < compLen; k++) {
           const ci = comp[k];
-          const cy = (ci / w) | 0;
-          world.stress[ci] = Math.max(0, (cy - minSurfLiqY) * rhoScale);
+          world.stress[ci] = Math.max(0, (compY[k] - minSurfLiqY) * rhoScale);
         }
         continue;
       }
@@ -232,7 +254,7 @@ export class MechanicsSolver {
 
       for (let k = 0; k < compLen; k++) {
         const ci = comp[k];
-        const cy = (ci / w) | 0;
+        const cy = compY[k];
         world.stress[ci] = Math.max(0, (cy - minSurfLiqY) * rhoScale);
 
         if (cy <= 0) continue;
@@ -268,6 +290,7 @@ export class MechanicsSolver {
             world.swapCells(srcIdx, dstIdx);
           }
         }
+      }
       }
     }
   }

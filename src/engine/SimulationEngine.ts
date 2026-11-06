@@ -74,16 +74,23 @@ export class SimulationEngine {
 
     const dt = SimulationEngine.FIXED_DT;
     this.world.dtSeconds = dt;
-    // Ограничиваем «догон» после сворачивания вкладки: не более 0.1 с за кадр.
-    const safeDt = Math.min(0.1, Math.max(0, realDtSeconds));
+    // ВАЖНО: никакого «догона» ценой FPS. Если кадр затянулся, делаем не
+    // больше maxTicks тактов, а лишнее время выбрасываем. Раньше при 20 FPS
+    // накопитель требовал 3 такта → ещё медленнее → спираль смерти → 15 FPS.
+    const safeDt = Math.min(0.05, Math.max(0, realDtSeconds));
+    const maxTicks = forceSingleStep ? 1 : Math.min(4, Math.max(2, Math.ceil(this.speedMultiplier * 2)));
     this.stepAccumulator = forceSingleStep
       ? 1
-      : Math.min(8, this.stepAccumulator + (safeDt / dt) * this.speedMultiplier);
+      : Math.min(maxTicks, this.stepAccumulator + (safeDt / dt) * this.speedMultiplier);
 
     const isBalance = settings.computeMode === 'balance70';
-    const mechSubsteps = Math.max(1, settings.substeps);
+    // Бюджет подшагов механики НА КАДР, а не на такт. При 60 FPS это 3
+    // подшага в одном такте; при 30–20 FPS (2 такта догона) — по 1 подшагу,
+    // чтобы суммарная работа оставалась прежней и FPS не проваливался.
+    const plannedTicks = Math.max(1, Math.min(maxTicks, Math.floor(this.stepAccumulator)));
+    const mechSubsteps = Math.max(1, Math.floor(Math.max(1, settings.substeps) / plannedTicks));
     let ticks = 0;
-    while (this.stepAccumulator >= 1 && ticks < 8) {
+    while (this.stepAccumulator >= 1 && ticks < maxTicks) {
       // Никакого «пропуска физики по времени»: 1× обязан идти секунда в
       // секунду, а 4× — вчетверо быстрее. От «спирали смерти» защищает
       // ограничение accumulator (не более 0.1 с реального времени за кадр).
@@ -93,20 +100,25 @@ export class SimulationEngine {
       // Один проход по миру вместо полных проходов в каждом решателе.
       this.world.refreshActivity();
       this.stepWeather();
-      stepWires(this.world);
+      if (this.world.wires.length > 0) stepWires(this.world);
       this.airSolver.step(this.world, isBalance ? 4 : 2);
-      this.surfaceWaveSolver.step(this.world);
+      if (this.world.hasLiquids) this.surfaceWaveSolver.step(this.world);
       this.thermalSolver.step(this.world, true);
       // Второй проход в «Балансе» уточняет только теплопроводность.
       if (isBalance) this.thermalSolver.step(this.world, false);
-      this.electricSolver.step(this.world, isBalance ? 8 : 5);
-      this.currentSolver.step(this.world);
-      this.deviceSolver.step(this.world);
+      // Нет проводов/устройств — не тратим ~1.5 мс на электрику и устройства.
+      if (this.world.hasCircuits) {
+        this.electricSolver.step(this.world, isBalance ? 8 : 5);
+        this.currentSolver.step(this.world);
+        this.deviceSolver.step(this.world);
+      }
       this.chemistrySolver.step(this.world);
       for (let s = 0; s < mechSubsteps; s++) this.mechanicsSolver.step(this.world, s === 0);
-      stepMechanicalSystem(this.world);
+      if (this.world.wheels.length > 0 || this.world.mechanicalSprings.length > 0) stepMechanicalSystem(this.world);
     }
-    if (forceSingleStep) this.stepAccumulator = 0;
+    // Долг не копится: перегруженный кадр просто чуть замедляет симуляцию,
+    // но никогда не заставляет следующий кадр считать ещё больше физики.
+    this.stepAccumulator = forceSingleStep ? 0 : Math.min(this.stepAccumulator, 0.9);
 
     return performance.now() - t0;
   }

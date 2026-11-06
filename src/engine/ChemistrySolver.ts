@@ -90,7 +90,8 @@ export class ChemistrySolver {
     for (let y = 0; y < h; y++) {
       if (!world.rowActive[y]) continue;
       const row = y * w;
-      for (let x = 0; x < w; x++) {
+      const x0 = world.rowMinX[y], x1 = world.rowMaxX[y];
+      for (let x = x0; x <= x1; x++) {
         const i = row + x;
         const m = mat[i];
         if (!NEEDS_CHEM_LUT[m]) continue;
@@ -151,14 +152,29 @@ export class ChemistrySolver {
             }
             if (oxygenBoost) temp[i] = Math.min(3600, temp[i] + 8400 * dt);
 
-            // Угасание привязано к реальному времени, а не к частоте кадров.
-            const base = m === MAT.ELECTRIC_ARC ? 16 : m === MAT.PLASMA ? 8 : 3;
-            const decay = Math.max(1, Math.round(base * dt * 15));
-            if (wet[i] <= decay) {
-              mat[i] = m === MAT.FIRE && world.rand() < 0.28 ? MAT.SMOKE : MAT.EMPTY;
-              wet[i] = mat[i] === MAT.SMOKE ? 150 : 0;
+            // Огонь живёт, пока рядом есть горячее топливо: фитиль с маслом,
+            // дерево, уголь, масло — пламя не «выгорает» за пару секунд.
+            let fed = false;
+            if (m === MAT.FIRE) {
+              for (let d = 0; d < 4; d++) {
+                const nx = x + DX4[d], ny = y + DY4[d];
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                const j = ny * w + nx, nm = mat[j];
+                if (FLAMMABILITY_LUT[nm] > 0 && temp[j] > IGNITION_LUT[nm] * 0.4) { fed = true; break; }
+              }
+            }
+            if (fed) {
+              if (wet[i] < 210) wet[i] = Math.min(255, wet[i] + 12);
             } else {
-              wet[i] -= decay;
+              // Угасание привязано к реальному времени, а не к частоте кадров.
+              const base = m === MAT.ELECTRIC_ARC ? 16 : m === MAT.PLASMA ? 8 : 3;
+              const decay = Math.max(1, Math.round(base * dt * 12));
+              if (wet[i] <= decay) {
+                mat[i] = m === MAT.FIRE && world.rand() < 0.28 ? MAT.SMOKE : MAT.EMPTY;
+                wet[i] = mat[i] === MAT.SMOKE ? 150 : 0;
+              } else {
+                wet[i] -= decay;
+              }
             }
           } else if (m === MAT.EMBER) {
             if (t < 550 || world.rand() < chancePerTick(1.5, dt)) mat[i] = MAT.EMPTY;
@@ -229,7 +245,7 @@ export class ChemistrySolver {
               if (y > 0 && (mat[i - w] === MAT.EMPTY || mat[i - w] === MAT.OXYGEN)) {
                 mat[i - w] = MAT.FIRE;
                 temp[i - w] = 950 + heatAdd * 4;
-                wet[i - w] = 110 + (world.randByte() & 63);
+                wet[i - w] = 195 + (world.randByte() & 60);
                 world.meta[i - w] = FLAME_COLOR_LUT[m];
                 if (oxygenNeighbors <= 2 && world.rand() < 0.12) { mat[i - w] = MAT.SOOT; world.meta[i - w] = 0; }
               }

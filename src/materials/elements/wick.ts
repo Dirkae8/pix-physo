@@ -44,5 +44,14 @@ export default defineElement({
     sheet: true,
     burnRatePerSecond: 0.8,
   },
-
+  onStep: (w, i, x, y, dt) => {
+    if (y <= 0 || w.absorbedMat[i] === 0 || w.wetness[i] < 18) return;
+    const above = i - w.width;
+    if (w.mat[above] === 0 && w.temp[i] > 170 && w.rand() < Math.min(1, 7 * dt)) {
+      w.setCell(x, y - 1, 62, 940);
+      w.wetness[above] = 220;
+      w.temp[i] = Math.max(w.temp[i], 430);
+      w.wetness[i] = Math.max(0, w.wetness[i] - 1);
+    }
+  },
 });

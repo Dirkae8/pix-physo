@@ -129,6 +129,54 @@ describe('реальное время 1× и скорости реакций', (
     expect(w.wetness[i]).toBeGreaterThan(0);
   });
 
+  it('холодная вода не даёт густой пар', () => {
+    const w = new World(30, 20); w.applyPreset('home');
+    let total = 0;
+    for (let y = 4; y < 16; y++) for (let x = 4; x < 26; x++) { w.setCell(x, y, MAT.WATER, 30); total++; }
+    const thermal = new ThermalSolver(w.size), chem = new ChemistrySolver();
+    for (let t = 0; t < 180; t++) { thermal.step(w, true); chem.step(w); }
+    let vapor = 0;
+    for (let i = 0; i < w.size; i++) {
+      if (w.mat[i] === MAT.WATER_VAPOR || w.mat[i] === MAT.STEAM) vapor++;
+    }
+    expect(vapor).toBeLessThan(Math.max(2, total * 0.03));
+  });
+
+  it('водяной пар конденсируется, а не копился вечно', () => {
+    const w = new World(12, 12); w.applyPreset('home');
+    const i = w.idx(5, 5);
+    w.setCell(5, 5, MAT.WATER_VAPOR, 30);
+    const chem = new ChemistrySolver();
+    for (let t = 0; t < 240; t++) chem.step(w);
+    expect(w.mat[i]).not.toBe(MAT.WATER_VAPOR);
+  });
+
+  it('фитиль с топливом держит пламя, а огонь рядом с топливом не гаснет', () => {
+    const w = new World(16, 16); w.applyPreset('home');
+    const wick = w.idx(6, 8);
+    w.setCell(6, 8, XMAT.WICK, 250);
+    w.absorbedMat[wick] = XMAT.VEGETABLE_OIL;
+    w.wetness[wick] = 200;
+    const chem = new ChemistrySolver();
+    for (let t = 0; t < 90; t++) { w.temp[wick] = Math.max(w.temp[wick], 250); chem.step(w); }
+    expect(w.mat[wick - w.width]).toBe(MAT.FIRE);
+
+    const w2 = new World(16, 16); w2.applyPreset('home');
+    const fire = w2.idx(8, 8);
+    w2.setCell(8, 8, MAT.FIRE);
+    w2.setCell(8, 9, MAT.WOOD, 400);
+    const chem2 = new ChemistrySolver();
+    for (let t = 0; t < 180; t++) chem2.step(w2);
+    expect(w2.mat[fire]).toBe(MAT.FIRE);
+  });
+
+  it('при просадке FPS физика не размножается (нет спирали смерти)', () => {
+    const e = new SimulationEngine(settings);
+    // Один кадр с задержкой 200 мс не должен сделать больше 2 тактов.
+    e.stepFrame(settings, false, 0.2);
+    expect(e.world.timeSec).toBeLessThanOrEqual(2 / 60 + 1e-6);
+  });
+
   it('активные строки пропускают пустые области без потери физики', () => {
     const w = new World(40, 40);
     w.setCell(10, 20, MAT.STEEL);

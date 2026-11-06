@@ -443,13 +443,16 @@ void main() {
       float dx = abs(cuv.x - 0.5 - wobble * 0.4) * 2.0;
       float body = smoothstep(taper + 0.12, taper - 0.18, dx);
       float baseFade = 1.0 - smoothstep(0.55, 1.0, cuv.y) * 0.25;
-      float heat = clamp(body * baseFade * flicker * (0.55 + life * 0.65), 0.0, 1.0);
-      vec3 core = mix(baseCol, accentCol, 0.65) * 1.9;
-      vec3 edgeCol = baseCol * 0.55;
+      float heat = clamp(body * baseFade * flicker * (0.72 + life * 0.55), 0.0, 1.0);
+      heat = max(heat, body * 0.42);
+      // Раскалённое белое ядро у основания, оранжевые языки выше.
+      vec3 core = mix(baseCol, accentCol, 0.7) * 2.7;
+      core = mix(core, vec3(1.65, 1.45, 1.05), pow(1.0 - cuv.y, 3.0) * 0.55 * heat);
+      vec3 edgeCol = baseCol * 0.85;
       col = mix(edgeCol, core, heat);
-      emissiveBoost = 0.25 + heat * 1.9;
+      emissiveBoost = 0.7 + heat * 2.3;
       vec3 bgSky = vec3(0.032, 0.045, 0.062) + rad.rgb * 0.45;
-      col = mix(bgSky, col, clamp(heat * 1.25, 0.0, 1.0));
+      col = mix(bgSky, col, clamp(0.32 + heat * 0.85, 0.0, 1.0));
     }
 
     // Capillary liquid saturation tinting on porous Sand, Soil, Sponge, Sawdust, Brick!

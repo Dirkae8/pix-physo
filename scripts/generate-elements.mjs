@@ -128,6 +128,9 @@ const PHYSICS_FIX = {
   chicken_broth: { dispersion: 10, viscosity: 0.055 },
   // Газы: плотность задаёт плавучесть, дисперсия — скорость растекания.
   sf6: { dispersion: 4 }, radon: { dispersion: 3 }, xenon: { dispersion: 5 },
+  // Водяной пар обязан конденсироваться, иначе он копился вечно и при 30 °C
+  // выглядел как густой «кипяток» над холодной водой.
+  water_vapor: { freezeTempC: 60, freezeInto: idOf('water') },
   // Электрика: источники и нагреватели.
   nichrome_wire: { elecResistanceHeat: 3.2 }, wire_resistor: { elecResistanceHeat: 2.4 },
   superconductor: { elecResistanceHeat: 0 }, led_strip: { emissive: 0.9 },
@@ -176,6 +179,28 @@ const HOOKS = {
         w.events.sizzleCount++;
         return;
       }
+    }
+  }` },
+  water_vapor: { onStep: `(w, i, x, y, dt) => {
+    // Пар рассеивается в воздухе, а охлаждаясь — конденсируется в воду.
+    // Раньше у пара не было пути назад, и он накапливался при любой температуре.
+    // Ниже точки росы пар конденсируется в воду, выше — постепенно
+    // рассеивается в воздухе. Никакого «бессмертного» пара при 30 °C.
+    if (w.temp[i] < 60) {
+      if (w.rand() < Math.min(1, 2.4 * dt)) { w.mat[i] = ${ID.water}; w.wetness[i] = 0; }
+      return;
+    }
+    if (w.rand() < Math.min(1, 0.9 * dt)) w.mat[i] = 0;
+  }` },
+  // Фитиль с впитанным топливом держит устойчивое пламя, пока есть горючее.
+  wick: { onStep: `(w, i, x, y, dt) => {
+    if (y <= 0 || w.absorbedMat[i] === 0 || w.wetness[i] < 18) return;
+    const above = i - w.width;
+    if (w.mat[above] === 0 && w.temp[i] > 170 && w.rand() < Math.min(1, 7 * dt)) {
+      w.setCell(x, y - 1, 62, 940);
+      w.wetness[above] = 220;
+      w.temp[i] = Math.max(w.temp[i], 430);
+      w.wetness[i] = Math.max(0, w.wetness[i] - 1);
     }
   }` },
   piezo: { onVoltage: `(w, i) => {

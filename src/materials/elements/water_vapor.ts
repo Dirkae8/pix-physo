@@ -33,12 +33,24 @@ export default defineElement({
     opacity: 0.44,
     emissive: 0,
     textureStyle: "gas",
+    freezeTempC: 60,
+    freezeInto: 24,
   },
   reactions: [
-
+    {"note":"Затвердевание → #24","trigger":"heat","minTempC":60,"produce":24},
   ],
   behavior: {
 
   },
-
+  onStep: (w, i, x, y, dt) => {
+    // Пар рассеивается в воздухе, а охлаждаясь — конденсируется в воду.
+    // Раньше у пара не было пути назад, и он накапливался при любой температуре.
+    // Ниже точки росы пар конденсируется в воду, выше — постепенно
+    // рассеивается в воздухе. Никакого «бессмертного» пара при 30 °C.
+    if (w.temp[i] < 60) {
+      if (w.rand() < Math.min(1, 2.4 * dt)) { w.mat[i] = 24; w.wetness[i] = 0; }
+      return;
+    }
+    if (w.rand() < Math.min(1, 0.9 * dt)) w.mat[i] = 0;
+  },
 });

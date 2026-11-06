@@ -7,6 +7,7 @@ import type {
 import { ELEMENT_MODULES } from './elements';
 import { MAX_MAT_ID } from './ids';
 import {
+  MAT,
   DENSITY_LUT,
   DISPERSION_LUT,
   ELEC_COND_LUT,
@@ -57,6 +58,15 @@ export const SHEET_LUT = new Uint8Array(MAX_MAT_ID);
 export const FUME_LUT = new Uint8Array(MAX_MAT_ID);
 
 BURN_PRODUCT_LUT.fill(-1);
+
+/** 1 = веществу нужен электрический проход/обработка устройств. */
+export const NEEDS_ELECTRIC_LUT = new Uint8Array(MAX_MAT_ID);
+for (let id = 0; id < MAX_MAT_ID; id++) {
+  const d = MATERIAL_BY_ID[id];
+  NEEDS_ELECTRIC_LUT[id] = (d.elecCond > 0 || d.category === 'electric' ||
+    id === MAT.GAS_CYLINDER || id === MAT.PUMP || id === MAT.VALVE ||
+    id === MAT.ELECTROMAGNET || id === MAT.COMPRESSOR || id === MAT.VACUUM_PUMP) ? 1 : 0;
+}
 
 function bind(module: ElementModule): void {
   const id = module.def.id;

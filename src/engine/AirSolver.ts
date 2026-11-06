@@ -8,6 +8,7 @@ export class AirSolver {
   private nextOxygen: Float32Array;
   private fanDirs: Uint8Array;
   private fanBoosts: Float32Array;
+  private fanCellBuf: Int32Array;
 
   constructor(airSize: number) {
     this.nextP = new Float32Array(airSize);
@@ -16,6 +17,7 @@ export class AirSolver {
     this.nextOxygen = new Float32Array(airSize);
     this.fanDirs = new Uint8Array(airSize);
     this.fanBoosts = new Float32Array(airSize);
+    this.fanCellBuf = new Int32Array(airSize);
   }
 
   public ensureSize(airSize: number): void {
@@ -26,6 +28,7 @@ export class AirSolver {
       this.nextOxygen = new Float32Array(airSize);
       this.fanDirs = new Uint8Array(airSize);
       this.fanBoosts = new Float32Array(airSize);
+      this.fanCellBuf = new Int32Array(airSize);
     }
   }
 
@@ -49,13 +52,36 @@ export class AirSolver {
     const ambT = world.env.ambientTempC;
     const gravSign = Math.sign(world.env.gravity) || 1;
     let fanCount = 0;
+    let fanLen = 0;
+    let activity = 0;
+    let peakPressure = 0;
+    const fanCells = this.fanCellBuf;
     this.fanDirs.fill(0);
 
     for (let ay = 0; ay < ah; ay++) {
       const cy0 = ay << 2;
+      const yEnd = Math.min(h, cy0 + 4);
       for (let ax = 0; ax < aw; ax++) {
         const cx0 = ax << 2;
         const ai = ay * aw + ax;
+
+        // Блок 4×4 целиком вне вещества: маска уже пуста, 16 чтений не нужны.
+        let blockMin = w, blockMax = -1;
+        for (let y = cy0; y < yEnd; y++) {
+          if (!world.rowActive[y]) continue;
+          if (world.rowMinX[y] < blockMin) blockMin = world.rowMinX[y];
+          if (world.rowMaxX[y] > blockMax) blockMax = world.rowMaxX[y];
+        }
+        if (blockMax < cx0 || blockMin > cx0 + 3 || blockMax < 0) {
+          wall[ai] = 0;
+          const a = Math.abs(p[ai]);
+          if (a > activity) activity = a;
+          if (a > peakPressure) peakPressure = a;
+          if (Math.abs(vx[ai]) > activity) activity = Math.abs(vx[ai]);
+          if (Math.abs(vy[ai]) > activity) activity = Math.abs(vy[ai]);
+          continue;
+        }
+
         let solidCount = 0;
         let tempSum = 0;
         let fanHere = false;
@@ -99,6 +125,12 @@ export class AirSolver {
           continue;
         }
 
+        const ap = Math.abs(p[ai]), avx = Math.abs(vx[ai]), avy = Math.abs(vy[ai]);
+        if (ap > activity) activity = ap;
+        if (avx > activity) activity = avx;
+        if (avy > activity) activity = avy;
+        if (ap > peakPressure) peakPressure = ap;
+
         // Thermal convection: hot air expands & rises against gravity
         const avgCellTemp = tempSum * 0.0625;
         const dT = avgCellTemp - ambT;
@@ -112,17 +144,19 @@ export class AirSolver {
         if (fanHere && fanBoost > 0) {
           this.fanDirs[ai] = fanDir + 1;
           this.fanBoosts[ai] = fanBoost;
+          fanCells[fanLen++] = ai;
           fanCount++;
         }
       }
     }
     world.events.fanActiveCount = fanCount;
 
-    // Inject fans only after the complete obstacle mask has been rebuilt.
-    // Reading the previous frame's mask here caused jets to pass through new walls.
-    for (let ay = 0; ay < ah; ay++) for (let ax = 0; ax < aw; ax++) {
-      const ai = ay * aw + ax, dir = this.fanDirs[ai] - 1;
+    // Впрыск вентиляторов только по реально найденным ячейкам, а не полным
+    // проходом по всей coarse-сетке (раньше это был лишний O(aw*ah)).
+    for (let k = 0; k < fanLen; k++) {
+      const ai = fanCells[k], dir = this.fanDirs[ai] - 1;
       if (dir < 0 || wall[ai]) continue;
+      const ax = ai % aw, ay = (ai / aw) | 0;
       const dx = dir === 0 ? 1 : dir === 2 ? -1 : 0;
       const dy = dir === 1 ? 1 : dir === 3 ? -1 : 0;
       const boost = this.fanBoosts[ai];
@@ -150,106 +184,96 @@ export class AirSolver {
     const targetWy = Math.sin(rad) * windSpd * gustFactor;
     const hasWind = windSpd > 0.02;
 
-    // 3. Coupled Acoustic Wave + Navier-Stokes Pressure-Velocity Relaxation (TPT-inspired)
-    for (let iter = 0; iter < iterations; iter++) {
-      // Update Pressure from Velocity Divergence: dP/dt = -c^2 * div(u)
-      for (let ay = 0; ay < ah; ay++) {
-        const row = ay * aw;
-        for (let ax = 0; ax < aw; ax++) {
-          const i = row + ax;
-          if (wall[i]) {
-            this.nextP[i] = 0;
-            continue;
+    // 3. Coupled Acoustic Wave + Navier-Stokes Pressure-Velocity Relaxation.
+    // Спокойный воздух (нет ветра, вентиляторов, давления и течений) вообще
+    // не нуждается в релаксации: экономим два полных прохода по coarse-сетке.
+    // Буферы меняются местами (ping-pong) вместо p.set()/vx.set() на каждой
+    // итерации — при iterations=2 это убирает 6 копий массивов за такт.
+    const needsRelax = hasWind || fanCount > 0 || activity > 0.02;
+    if (needsRelax) {
+      let curP: Float32Array = p, curVx: Float32Array = vx, curVy: Float32Array = vy;
+      let nxtP: Float32Array = this.nextP, nxtVx: Float32Array = this.nextVx, nxtVy: Float32Array = this.nextVy;
+      let tmp: Float32Array;
+
+      // Ветер сам по себе не требует двух итераций: они нужны только для
+      // вентиляторов и ударных волн. На спокойных сценах экономим проход.
+      const relaxIters = (fanCount > 0 || peakPressure > 5) ? iterations : 1;
+      for (let iter = 0; iter < relaxIters; iter++) {
+        // Update Pressure from Velocity Divergence: dP/dt = -c^2 * div(u)
+        for (let ay = 0; ay < ah; ay++) {
+          const row = ay * aw;
+          for (let ax = 0; ax < aw; ax++) {
+            const i = row + ax;
+            if (wall[i]) { nxtP[i] = 0; continue; }
+
+            const vxR = ax + 1 < aw && !wall[i + 1] ? curVx[i + 1] : 0;
+            const vxL = ax > 0 && !wall[i - 1] ? curVx[i - 1] : 0;
+            const vyD = ay + 1 < ah && !wall[i + aw] ? curVy[i + aw] : 0;
+            const vyU = ay > 0 && !wall[i - aw] ? curVy[i - aw] : 0;
+            const div = (vxR - vxL + vyD - vyU) * 0.36;
+
+            const pL = ax > 0 && !wall[i - 1] ? curP[i - 1] : curP[i];
+            const pR = ax + 1 < aw && !wall[i + 1] ? curP[i + 1] : curP[i];
+            const pU = ay > 0 && !wall[i - aw] ? curP[i - aw] : curP[i];
+            const pD = ay + 1 < ah && !wall[i + aw] ? curP[i + aw] : curP[i];
+            const avgP = (pL + pR + pU + pD) * 0.25;
+
+            let np = (curP[i] * 0.72 + avgP * 0.28 - div * 2.4) * 0.992;
+            if (
+              (world.env.boundary === 'open_all' && (ax === 0 || ax === aw - 1 || ay === 0 || ay === ah - 1)) ||
+              (world.env.boundary === 'open_sky' && ay === 0)
+            ) np *= 0.35;
+            nxtP[i] = Math.max(-95, Math.min(1800, np));
           }
-
-          const vxR = ax + 1 < aw && !wall[i + 1] ? vx[i + 1] : 0;
-          const vxL = ax > 0 && !wall[i - 1] ? vx[i - 1] : 0;
-          const vyD = ay + 1 < ah && !wall[i + aw] ? vy[i + aw] : 0;
-          const vyU = ay > 0 && !wall[i - aw] ? vy[i - aw] : 0;
-
-          const div = (vxR - vxL + vyD - vyU) * 0.36;
-
-          // Neighbor smoothing for stable shockwave fronts
-          const pL = ax > 0 && !wall[i - 1] ? p[i - 1] : p[i];
-          const pR = ax + 1 < aw && !wall[i + 1] ? p[i + 1] : p[i];
-          const pU = ay > 0 && !wall[i - aw] ? p[i - aw] : p[i];
-          const pD = ay + 1 < ah && !wall[i + aw] ? p[i + aw] : p[i];
-          const avgP = (pL + pR + pU + pD) * 0.25;
-
-          let np = (p[i] * 0.72 + avgP * 0.28 - div * 2.4) * 0.992;
-
-          // Open boundaries bleed excess pressure to atmosphere
-          if (
-            (world.env.boundary === 'open_all' && (ax === 0 || ax === aw - 1 || ay === 0 || ay === ah - 1)) ||
-            (world.env.boundary === 'open_sky' && ay === 0)
-          ) {
-            np *= 0.35;
-          }
-
-          this.nextP[i] = Math.max(-95, Math.min(1800, np));
         }
-      }
-      p.set(this.nextP);
+        tmp = curP; curP = nxtP; nxtP = tmp;
 
-      // Update Velocity from Pressure Gradient: du/dt = -grad(P)/rho + viscosity + wind
-      for (let ay = 0; ay < ah; ay++) {
-        const row = ay * aw;
-        for (let ax = 0; ax < aw; ax++) {
-          const i = row + ax;
-          if (wall[i]) {
-            this.nextVx[i] = 0;
-            this.nextVy[i] = 0;
-            continue;
+        // Update Velocity from Pressure Gradient: du/dt = -grad(P)/rho + viscosity + wind
+        for (let ay = 0; ay < ah; ay++) {
+          const row = ay * aw;
+          for (let ax = 0; ax < aw; ax++) {
+            const i = row + ax;
+            if (wall[i]) { nxtVx[i] = 0; nxtVy[i] = 0; continue; }
+
+            const pC = curP[i];
+            const pR = ax + 1 < aw && !wall[i + 1] ? curP[i + 1] : pC;
+            const pL = ax > 0 && !wall[i - 1] ? curP[i - 1] : pC;
+            const pD = ay + 1 < ah && !wall[i + aw] ? curP[i + aw] : pC;
+            const pU = ay > 0 && !wall[i - aw] ? curP[i - aw] : pC;
+
+            let nvx = curVx[i] - (pR - pL) * 0.22;
+            let nvy = curVy[i] - (pD - pU) * 0.22;
+
+            const vxAvg = ((ax > 0 ? curVx[i - 1] : nvx) + (ax + 1 < aw ? curVx[i + 1] : nvx) +
+              (ay > 0 ? curVx[i - aw] : nvx) + (ay + 1 < ah ? curVx[i + aw] : nvx)) * 0.25;
+            const vyAvg = ((ax > 0 ? curVy[i - 1] : nvy) + (ax + 1 < aw ? curVy[i + 1] : nvy) +
+              (ay > 0 ? curVy[i - aw] : nvy) + (ay + 1 < ah ? curVy[i + aw] : nvy)) * 0.25;
+
+            nvx = (nvx * 0.84 + vxAvg * 0.16) * 0.985;
+            nvy = (nvy * 0.84 + vyAvg * 0.16) * 0.985;
+
+            const openEdge = world.env.boundary === 'open_all'
+              ? ax === 0 || ax === aw - 1 || ay === 0 || ay === ah - 1
+              : world.env.boundary === 'open_sky' && ay === 0;
+            if (hasWind && openEdge) { nvx += (targetWx - nvx) * 0.18; nvy += (targetWy - nvy) * 0.18; }
+            if ((nvx > 0 && ax + 1 < aw && wall[i + 1]) || (nvx < 0 && ax > 0 && wall[i - 1])) nvx = 0;
+            if ((nvy > 0 && ay + 1 < ah && wall[i + aw]) || (nvy < 0 && ay > 0 && wall[i - aw])) nvy = 0;
+
+            nxtVx[i] = Math.max(-55, Math.min(55, nvx));
+            nxtVy[i] = Math.max(-55, Math.min(55, nvy));
           }
-
-          const pC = p[i];
-          const pR = ax + 1 < aw && !wall[i + 1] ? p[i + 1] : pC;
-          const pL = ax > 0 && !wall[i - 1] ? p[i - 1] : pC;
-          const pD = ay + 1 < ah && !wall[i + aw] ? p[i + aw] : pC;
-          const pU = ay > 0 && !wall[i - aw] ? p[i - aw] : pC;
-
-          let nvx = vx[i] - (pR - pL) * 0.22;
-          let nvy = vy[i] - (pD - pU) * 0.22;
-
-          // Viscous diffusion
-          const vxAvg =
-            ((ax > 0 ? vx[i - 1] : nvx) +
-              (ax + 1 < aw ? vx[i + 1] : nvx) +
-              (ay > 0 ? vx[i - aw] : nvx) +
-              (ay + 1 < ah ? vx[i + aw] : nvx)) *
-            0.25;
-          const vyAvg =
-            ((ax > 0 ? vy[i - 1] : nvy) +
-              (ax + 1 < aw ? vy[i + 1] : nvy) +
-              (ay > 0 ? vy[i - aw] : nvy) +
-              (ay + 1 < ah ? vy[i + aw] : nvy)) *
-            0.25;
-
-          nvx = (nvx * 0.84 + vxAvg * 0.16) * 0.985;
-          nvy = (nvy * 0.84 + vyAvg * 0.16) * 0.985;
-
-          // Ambient wind enters only at open boundaries, never throughout a sealed room.
-          const openEdge = world.env.boundary === 'open_all'
-            ? ax === 0 || ax === aw - 1 || ay === 0 || ay === ah - 1
-            : world.env.boundary === 'open_sky' && ay === 0;
-          if (hasWind && openEdge) {
-            nvx += (targetWx - nvx) * 0.18;
-            nvy += (targetWy - nvy) * 0.18;
-          }
-          // Impermeable no-through-flow boundary; tangential flow remains free.
-          if ((nvx > 0 && ax + 1 < aw && wall[i + 1]) || (nvx < 0 && ax > 0 && wall[i - 1])) nvx = 0;
-          if ((nvy > 0 && ay + 1 < ah && wall[i + aw]) || (nvy < 0 && ay > 0 && wall[i - aw])) nvy = 0;
-
-          this.nextVx[i] = Math.max(-55, Math.min(55, nvx));
-          this.nextVy[i] = Math.max(-55, Math.min(55, nvy));
         }
+        tmp = curVx; curVx = nxtVx; nxtVx = tmp;
+        tmp = curVy; curVy = nxtVy; nxtVy = tmp;
       }
-      vx.set(this.nextVx);
-      vy.set(this.nextVy);
+      if (curP !== p) p.set(curP);
+      if (curVx !== vx) vx.set(curVx);
+      if (curVy !== vy) vy.set(curVy);
     }
 
     // Oxygen diffuses and is advected through open air cells, not through walls.
-    // It is replenished at open boundaries and consumed by the chemistry solver.
+    // Кислород может меняться и в неподвижном воздухе (его съедает огонь),
+    // поэтому этот один дешёвый проход оставляем всегда.
     const oxygen = world.airOxygen;
     for (let ay=0; ay<ah; ay++) for (let ax=0; ax<aw; ax++) {
       const i=ay*aw+ax, center=oxygen[i];

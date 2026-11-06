@@ -32,7 +32,7 @@ import { PIXPHYSO_LOGO_URI } from './logo';
 export class AppUI {
   private settings: GameSettings = {
     computeMode: 'gpu90',
-    substeps: 3,
+    substeps: 2,
     resolutionPreset: 'standard',
     hdrBloom: true,
     bloomIntensity: 0.72,
@@ -445,8 +445,8 @@ export class AppUI {
             </div>
 
             <div class="toggle-row">
-              <span>Подшаги физики за кадр: <strong id="valSubsteps">3</strong></span>
-              <input type="range" id="rngSubsteps" min="1" max="6" step="1" value="3" style="width:110px;" />
+              <span>Подшаги физики за кадр: <strong id="valSubsteps">2</strong></span>
+              <input type="range" id="rngSubsteps" min="1" max="6" step="1" value="2" style="width:110px;" />
             </div>
 
             <label class="toggle-row" style="cursor:pointer;">

@@ -63,16 +63,17 @@ export class ThermalSolver {
 
     for (let y = 0; y < h; y++) {
       const row = y * w;
-      // Неактивная строка не нуждается в диффузии, но её температуру надо
-      // перенести в выходной буфер, иначе temp.set(out) затрёт её старым значением.
-      if (!world.rowActive[y]) {
-        out.set(temp.subarray(row, row + w), row);
-        continue;
-      }
+      // Копируем строку целиком (быстрая типизированная операция), затем
+      // пересчитываем только активные столбцы — пустое небо не сканируется.
+      out.set(temp.subarray(row, row + w), row);
+      // Строка без температурных контрастов не проводит тепло: копия выше
+      // уже является точным результатом, считать 4 соседей не нужно.
+      if (!world.rowActive[y] || !world.rowHot[y]) continue;
+      const x0 = world.rowMinX[y], x1 = world.rowMaxX[y];
       const hasUp = y > 0;
       const hasDown = y + 1 < h;
 
-      for (let x = 0; x < w; x++) {
+      for (let x = x0; x <= x1; x++) {
         const i = row + x;
         const m = mat[i];
         let t = temp[i];
@@ -172,7 +173,8 @@ export class ThermalSolver {
     // Air/gases are transparent; the first solid or liquid absorbs the ray.
     if ((world.stepTick & 7) === 0) for (let y=0; y<h; y++) {
       if (!world.rowActive[y]) continue;
-      for (let x=0; x<w; x++) {
+      const rx0 = world.rowMinX[y], rx1 = world.rowMaxX[y];
+      for (let x=rx0; x<=rx1; x++) {
       const i=y*w+x, id=mat[i], t=temp[i];
       if (!id || t < 300 || STATE_LUT[id] === 4) continue;
       for (let d=0; d<4; d++) {
@@ -210,7 +212,8 @@ export class ThermalSolver {
     for (let y = 0; y < h; y++) {
       if (!world.rowActive[y]) continue;
       const row = y * w;
-      for (let x = 0; x < w; x++) {
+      const x0 = world.rowMinX[y], x1 = world.rowMaxX[y];
+      for (let x = x0; x <= x1; x++) {
         const i = row + x;
         const m = mat[i];
         if (m === MAT.EMPTY) continue;
@@ -294,7 +297,8 @@ export class ThermalSolver {
             world.wetness[i - w] = 180;
           } else if (
             (m === MAT.WATER || m === MAT.SALTWATER || m === MAT.SEAWATER) && t > 0 && y > 0 && mat[i - w] === MAT.EMPTY &&
-            world.rand() < chancePerTick(Math.min(.12, .0108 * Math.exp(Math.min(3, (t - 20) / 35)) * Math.max(0, 1 - humidity / 100)), dt)
+            t > 22 &&
+            world.rand() < chancePerTick(Math.min(.12, .002 * Math.exp(Math.min(3, (t - 40) / 18)) * Math.max(0, 1 - humidity / 100)), dt)
           ) {
             if (m !== MAT.WATER && world.rand() < .25) {
               mat[i] = MAT.SALT;

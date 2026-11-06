@@ -6,6 +6,7 @@ import {
   SensorPin,
 } from '../types/physics';
 import { MAT, MATERIAL_BY_ID, STATE_LUT, TENSILE_LUT, densityAt } from '../materials/registry';
+import { NEEDS_ELECTRIC_LUT } from '../materials/elementRegistry';
 import type { HangingWire } from './Wires';
 import type { Wheel, MechanicalSpring } from './MechanicalSystem';
 
@@ -138,6 +139,19 @@ export class World {
   public stamp!: Uint16Array;
   /** 0 = строка пустая, 1 = есть вещество, 2 = соседняя с активной (ореол). */
   public rowActive!: Uint8Array;
+  /** Горизонтальные границы вещества в строке (с ореолом). Пустые столбцы не сканируются. */
+  public rowMinX!: Int32Array;
+  public rowMaxX!: Int32Array;
+  /** Есть ли в мире газы/энергия и подвижные вещества — позволяет пропустить целые проходы. */
+  public hasGases = true;
+  public hasMobiles = true;
+  public hasLiquids = true;
+  public hasCircuits = true;
+  /** Построчные флаги: в строке есть подвижные вещества / газы. */
+  public rowHasMobiles!: Uint8Array;
+  public rowHasGases!: Uint8Array;
+  /** В строке (или в ореоле) есть температура, отличная от окружающей. */
+  public rowHot!: Uint8Array;
   /** Поддерживается инкрементально при упаковке GPU-текстур. */
   public particleCount = 0;
 
@@ -222,6 +236,11 @@ export class World {
     this.seed = new Uint8Array(n);
     this.stamp = new Uint16Array(n);
     this.rowActive = new Uint8Array(this.height);
+    this.rowMinX = new Int32Array(this.height);
+    this.rowMaxX = new Int32Array(this.height).fill(this.width - 1);
+    this.rowHasMobiles = new Uint8Array(this.height).fill(1);
+    this.rowHasGases = new Uint8Array(this.height).fill(1);
+    this.rowHot = new Uint8Array(this.height).fill(1);
     this.rowActive.fill(1); // при прямом вызове решателей из тестов всё активно
 
     this.airPressure = new Float32Array(this.airSize);
@@ -297,17 +316,63 @@ export class World {
    */
   public refreshActivity(): void {
     const w = this.width, h = this.height, mat = this.mat, rows = this.rowActive;
-    rows.fill(0);
+    const minX = this.rowMinX, maxX = this.rowMaxX, st = STATE_LUT, temp = this.temp;
+    const ambT = this.env.ambientTempC, hot = this.rowHot;
+    hot.fill(0);
+    let anyGas = false, anyMobile = false, anyLiquid = false, anyCircuit = false;
     for (let y = 0; y < h; y++) {
       const row = y * w;
+      let lo = w, hi = -1;
+      let rowGas = 0, rowMobile = 0, rowHeat = 0;
       for (let x = 0; x < w; x++) {
-        if (mat[row + x] !== 0) { rows[y] = 1; break; }
+        const m = mat[row + x];
+        if (m === 0) continue;
+        if (x < lo) lo = x;
+        hi = x;
+        const s = st[m];
+        if (s === 4 || s === 5) rowGas = 1;
+        else if (s === 2 || s === 3) rowMobile = 1;
+        if (s === 3) anyLiquid = true;
+        if (NEEDS_ELECTRIC_LUT[m]) anyCircuit = true;
+        if (Math.abs(temp[row + x] - ambT) > 2) rowHeat = 1;
       }
+      hot[y] = rowHeat;
+      anyGas ||= rowGas === 1;
+      anyMobile ||= rowMobile === 1;
+      this.rowHasGases[y] = rowGas;
+      this.rowHasMobiles[y] = rowMobile;
+      rows[y] = hi >= 0 ? 1 : 0;
+      // Ореол в 2 клетки: вещество может сдвинуться за такт в пустой столбец.
+      minX[y] = hi >= 0 ? Math.max(0, lo - 2) : 0;
+      maxX[y] = hi >= 0 ? Math.min(w - 1, hi + 2) : -1;
+    }
+    // Температурный ореол в 2 строки: теплопроводность за один такт
+    // успевает пройти не дальше одной клетки, большего запаса не нужно.
+    const hotRaw = hot.slice();
+    for (let y = 0; y < h; y++) {
+      if (hotRaw[y]) continue;
+      if ((y > 0 && hotRaw[y - 1]) || (y > 1 && hotRaw[y - 2]) ||
+          (y + 1 < h && hotRaw[y + 1]) || (y + 2 < h && hotRaw[y + 2])) hot[y] = 2;
     }
     for (let y = 0; y < h; y++) {
+      // Ореол по строкам: вещество может перейти из соседней строки.
+      if (this.rowHasMobiles[y] === 0 && ((y > 0 && this.rowHasMobiles[y - 1]) || (y + 1 < h && this.rowHasMobiles[y + 1]))) {
+        this.rowHasMobiles[y] = 2;
+      }
+      if (this.rowHasGases[y] === 0 && ((y > 0 && this.rowHasGases[y - 1]) || (y + 1 < h && this.rowHasGases[y + 1]))) {
+        this.rowHasGases[y] = 2;
+      }
       if (rows[y] !== 0) continue;
-      if ((y > 0 && rows[y - 1] === 1) || (y + 1 < h && rows[y + 1] === 1)) rows[y] = 2;
+      if ((y > 0 && rows[y - 1] === 1) || (y + 1 < h && rows[y + 1] === 1)) {
+        rows[y] = 2;
+        minX[y] = 0;
+        maxX[y] = w - 1;
+      }
     }
+    this.hasGases = anyGas;
+    this.hasMobiles = anyMobile;
+    this.hasLiquids = anyLiquid;
+    this.hasCircuits = anyCircuit || this.wires.length > 0;
   }
 
   public clear(): void {
@@ -407,7 +472,7 @@ export class World {
     this.vy[i] = 0;
     this.wetness[i] =
       matId === MAT.FIRE
-        ? 150 + (this.randByte() & 63)
+        ? 195 + (this.randByte() & 60)
         : matId === MAT.PLASMA || matId === MAT.ELECTRIC_ARC
         ? 95 + (this.randByte() & 63)
         : matId === MAT.NEUTRON
