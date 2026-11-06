@@ -38,7 +38,7 @@ out vec4 fragColor;
 uniform sampler2D uPrevField;   // RGB = local volumetric light, A = smoothed thermal/pressure field
 uniform sampler2D uStateTexA;   // R=matId, G=tempNorm, B=seed, A=wetness
 uniform sampler2D uStateTexB;   // R=volt, G=current/stress, B=meta, A=absorbedMat
-uniform sampler2D uMatStyleTex; // 80x2 LUT: row0 = baseRGB + styleCode, row1 = accentRGB + opticalPacked
+uniform sampler2D uMatStyleTex; // MAX_MAT_ID x 2 LUT: row0 = baseRGB + styleCode, row1 = accentRGB + opticalPacked
 uniform vec2 uTexel;
 uniform int uPassIndex;
 
@@ -133,7 +133,7 @@ uniform sampler2D uStateTexA;   // R=matId, G=tempNorm, B=seed, A=wetness
 uniform sampler2D uStateTexB;   // R=volt, G=current/stress, B=meta, A=absorbedMat
 uniform sampler2D uAirTex;      // R=P_norm, G=vx_norm, B=vy_norm, A=wall
 uniform sampler2D uRadianceTex; // Volumetric light from GPU Radiance Solver
-uniform sampler2D uMatStyleTex; // 80x2 LUT
+uniform sampler2D uMatStyleTex; // MAX_MAT_ID x 2 LUT
 
 uniform vec2 uSimSize;
 uniform float uTime;
@@ -339,13 +339,25 @@ void main() {
       // SPONGE: Cellular pores
       float pore = smoothstep(0.62, 0.85, hash21(floor(fpx * 0.75)));
       col = mix(baseCol, accentCol * 0.65, pore);
-    } else if (style == 11 || style == 12 || style == 13 || style == 14 || style == 15 || style == 16) {
-      // GRANULAR POWDERS (Sand, Soil, Salt, Sugar, Coal, Snow, Sawdust, Gold)
+    } else if (style == 11 || style == 12 || style == 13 || style == 14 || style == 15) {
+      // GRANULAR POWDERS (Sand, Soil, Salt, Sugar, Coal, Snow)
       col = mix(baseCol * 0.84, accentCol * 1.06, seed);
-      if (style == 13 && seed > 0.82) {
-        // Crystalline sparkle on Salt, Sugar, Glass Shards
-        col += 0.22;
-      }
+      if (style == 13 && seed > 0.82) col += 0.22;
+    } else if (style == 16) {
+      // FIBERS / SHEETS: бумага, картон, ткань, фитиль, кевлар — НЕ сыпучая куча.
+      float thread = sin(fpx.x * 2.1 + sin(fpx.y * 0.5) * 1.4) * 0.055;
+      float weave = (hash21(floor(fpx * 1.7)) - 0.5) * 0.075;
+      col = mix(baseCol, accentCol, 0.18 + 0.12 * seed) + thread + weave;
+      if (mU == 0 || mD == 0) col = mix(col, accentCol, 0.42);
+    } else if (style == 8 || style == 10) {
+      // RUBBER / WAX / полимеры: мягкая матовая поверхность с лёгким бликом.
+      float grain = (hash21(floor(fpx * 0.6)) - 0.5) * 0.055;
+      float soft = pow(max(0.0, sin(fpx.x * 0.09 + fpx.y * 0.06)), 8.0) * 0.10;
+      col = baseCol + grain + accentCol * soft;
+    } else if (style == 9) {
+      // CERAMIC: гладкая глазурь с мелким кракелюром.
+      float crack = smoothstep(0.93, 1.0, hash21(floor(fpx * 0.45)));
+      col = mix(baseCol, accentCol, 0.10 + crack * 0.22);
     } else if (style == 17 || style == 19 || style == 20) {
       // LIQUIDS (Water, Oil, Acid, Gasoline, Ethanol, Honey): Meniscus, waves & Beer-Lambert depth
       float wave = sin(fpx.x * 0.22 + uTime * 3.8 + fpx.y * 0.12) * 0.04;
@@ -375,8 +387,8 @@ void main() {
       col = mix(bgSky, mix(baseCol, accentCol, seed * 0.5), alpha);
       fragColor = vec4(col, 1.0);
       return;
-    } else if (style >= 23 && style <= 33) {
-      // ELECTRICAL & MECHANICAL HARDWARE
+    } else if ((style >= 23 && style <= 35) || style == 38) {
+      // ELECTRICAL & MECHANICAL HARDWARE, explosives and tools
       col = mix(baseCol, accentCol, (seed - 0.3) * 0.35);
       if (matId == 49) {
         // Toggle Switch: bright green when ON (meta > 0), crimson red when OFF!
@@ -420,10 +432,24 @@ void main() {
       col = mix(baseCol, accentCol, 0.35 + 0.35 * sin(uTime * 3.2 + seed * 6.28));
       emissiveBoost = 0.65;
     } else if (style == 37) {
-      // PLASMA / FIRE / ELECTRIC ARC / NEUTRON
-      float flicker = 0.7 + 0.3 * sin(uTime * 22.0 + seed * 12.0 + fpx.y * 0.3);
-      col = mix(baseCol, accentCol, clamp(wetness * flicker, 0.2, 1.0)) * 1.35;
-      emissiveBoost = 1.85;
+      // PLASMA / FIRE / ELECTRIC ARC: язык пламени внутри клетки вместо
+      // однотонного квадрата. Используем дробную часть UV для субпиксельной
+      // формы — огонь больше не выглядит грубой пиксельной мозаикой.
+      vec2 cuv = fract(simUv * uSimSize);
+      float life = clamp(wetness, 0.0, 1.0);
+      float flicker = 0.72 + 0.28 * sin(uTime * 17.0 + seed * 31.0 + fpx.y * 0.7);
+      float wobble = sin(uTime * 6.0 + seed * 24.0 + cuv.y * 8.0) * 0.11;
+      float taper = mix(0.20, 0.97, cuv.y);
+      float dx = abs(cuv.x - 0.5 - wobble * 0.4) * 2.0;
+      float body = smoothstep(taper + 0.12, taper - 0.18, dx);
+      float baseFade = 1.0 - smoothstep(0.55, 1.0, cuv.y) * 0.25;
+      float heat = clamp(body * baseFade * flicker * (0.55 + life * 0.65), 0.0, 1.0);
+      vec3 core = mix(baseCol, accentCol, 0.65) * 1.9;
+      vec3 edgeCol = baseCol * 0.55;
+      col = mix(edgeCol, core, heat);
+      emissiveBoost = 0.25 + heat * 1.9;
+      vec3 bgSky = vec3(0.032, 0.045, 0.062) + rad.rgb * 0.45;
+      col = mix(bgSky, col, clamp(heat * 1.25, 0.0, 1.0));
     }
 
     // Capillary liquid saturation tinting on porous Sand, Soil, Sponge, Sawdust, Brick!

@@ -5,7 +5,7 @@ import {
   HoverProbe,
   SensorPin,
 } from '../types/physics';
-import { MAT, MATERIAL_BY_ID, STATE_LUT, densityAt } from '../materials/registry';
+import { MAT, MATERIAL_BY_ID, STATE_LUT, TENSILE_LUT, densityAt } from '../materials/registry';
 import type { HangingWire } from './Wires';
 import type { Wheel, MechanicalSpring } from './MechanicalSystem';
 
@@ -111,6 +111,12 @@ export class World {
   public height: number;
   public size: number;
 
+  /** Таблицы для хуков элементов: без обращения к объектам определений в циклах. */
+  public readonly stateLut = STATE_LUT;
+  public readonly tensileLut = TENSILE_LUT;
+  /** Длительность одного фиксированного такта в секундах реального времени. */
+  public dtSeconds = 1 / 60;
+
   // Coarse 4x4 continuum air Navier-Stokes grid (like The Powder Toy)
   public readonly airScale = 4;
   public airW: number;
@@ -130,6 +136,10 @@ export class World {
   public stress!: Float32Array;
   public seed!: Uint8Array;
   public stamp!: Uint16Array;
+  /** 0 = строка пустая, 1 = есть вещество, 2 = соседняя с активной (ореол). */
+  public rowActive!: Uint8Array;
+  /** Поддерживается инкрементально при упаковке GPU-текстур. */
+  public particleCount = 0;
 
   // Coarse air grid; the physics runs on the CPU.
   public airPressure!: Float32Array; // Delta kPa relative to env.pressureKPa
@@ -211,6 +221,8 @@ export class World {
     this.stress = new Float32Array(n);
     this.seed = new Uint8Array(n);
     this.stamp = new Uint16Array(n);
+    this.rowActive = new Uint8Array(this.height);
+    this.rowActive.fill(1); // при прямом вызове решателей из тестов всё активно
 
     this.airPressure = new Float32Array(this.airSize);
     this.airVx = new Float32Array(this.airSize);
@@ -276,6 +288,26 @@ export class World {
     const ax = Math.min(this.airW - 1, Math.max(0, x >> 2));
     const ay = Math.min(this.airH - 1, Math.max(0, y >> 2));
     return ay * this.airW + ax;
+  }
+
+  /**
+   * Один проход по миру вместо полных проходов в каждом решателе.
+   * Помечает строки, где есть вещество, и ореол вокруг них — остальные
+   * решатели пропускают одной проверкой на строку. Качество физики не меняется.
+   */
+  public refreshActivity(): void {
+    const w = this.width, h = this.height, mat = this.mat, rows = this.rowActive;
+    rows.fill(0);
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        if (mat[row + x] !== 0) { rows[y] = 1; break; }
+      }
+    }
+    for (let y = 0; y < h; y++) {
+      if (rows[y] !== 0) continue;
+      if ((y > 0 && rows[y - 1] === 1) || (y + 1 < h && rows[y + 1] === 1)) rows[y] = 2;
+    }
   }
 
   public clear(): void {
@@ -719,6 +751,7 @@ export class World {
       texB[o + 2] = meta[i];
       texB[o + 3] = absMat[i];
     }
+    this.particleCount = count;
     return count;
   }
 }

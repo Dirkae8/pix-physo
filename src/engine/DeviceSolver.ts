@@ -7,7 +7,9 @@ const VENT_DIRS: ReadonlyArray<readonly [number, number]> = [[0, -1], [1, 0], [-
 export class DeviceSolver {
   public step(world: World): void {
     const {width: w, height: h, mat} = world;
-    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    for (let y = 1; y < h - 1; y++) {
+      if (!world.rowActive[y]) continue;
+      for (let x = 1; x < w - 1; x++) {
       const i = y * w + x, type = mat[i];
       if (type === MAT.GAS_CYLINDER) {
         const charge = world.meta[i]&127, opened = (world.meta[i]&128) !== 0;
@@ -72,6 +74,7 @@ export class DeviceSolver {
         world.swapCells(previous,vacancy); vacancy=previous; distance--;
       }
       world.swapCells(source,target);
+      }
     }
   }
 }

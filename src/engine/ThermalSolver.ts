@@ -5,18 +5,10 @@ import {
   SPECIFIC_HEAT_LUT,
   STATE_LUT,
   THERMAL_COND_LUT,
-  XMAT,
 } from '../materials/registry';
+import { AQUEOUS_LUT } from '../materials/elementRegistry';
+import { chancePerTick } from '../materials/elementApi';
 import { World } from './World';
-
-/** Водные растворы кипят медленно: у них большая скрытая теплота парообразования. */
-const AQUEOUS_LUT = new Uint8Array(MAX_MAT_ID);
-for (const id of [
-  MAT.WATER, MAT.SALTWATER, MAT.SEAWATER,
-  XMAT.CHICKEN_BROTH, XMAT.MILK, XMAT.VINEGAR, XMAT.SOY_SAUCE,
-  XMAT.BEER, XMAT.RED_WINE, XMAT.COFFEE_DRINK, XMAT.CONDENSED_MILK,
-  XMAT.ORANGE_JUICE, XMAT.MAPLE_SYRUP, XMAT.LIQUID_SOAP,
-]) AQUEOUS_LUT[id] = 1;
 
 // Symmetric interface conductivity depends only on material IDs, not on the frame.
 const INTERFACE_COND = new Float32Array(MAX_MAT_ID * MAX_MAT_ID);
@@ -71,6 +63,12 @@ export class ThermalSolver {
 
     for (let y = 0; y < h; y++) {
       const row = y * w;
+      // Неактивная строка не нуждается в диффузии, но её температуру надо
+      // перенести в выходной буфер, иначе temp.set(out) затрёт её старым значением.
+      if (!world.rowActive[y]) {
+        out.set(temp.subarray(row, row + w), row);
+        continue;
+      }
       const hasUp = y > 0;
       const hasDown = y + 1 < h;
 
@@ -150,17 +148,16 @@ export class ThermalSolver {
         // The previous fixed coefficient became unstable for highly conductive metals.
         t += flux * Math.min(0.42 / cp, 0.24 / (conductance + 0.0001));
 
+        const relax = world.dtSeconds;
         if (t > 600) {
-          t -= (t - ambT) * 0.0018;
+          t -= (t - ambT) * 0.108 * relax;
         } else {
-          t += (ambT - t) * 0.0008;
+          t += (ambT - t) * 0.048 * relax;
         }
 
-        if (m === MAT.URANIUM && t < 85) {
-          t += 0.12;
-        }
+        if (m === MAT.URANIUM && t < 85) t += 7.2 * relax;
 
-        if (m === MAT.GLASS && t > 260 && maxDeltaNeighbor > 240 && world.rand() < 0.35) {
+        if (m === MAT.GLASS && t > 260 && maxDeltaNeighbor > 240 && world.rand() < chancePerTick(21, relax)) {
           mat[i] = MAT.GLASS_SHARDS;
           world.events.fractureCount++;
         }
@@ -173,7 +170,9 @@ export class ThermalSolver {
 
     // Sparse line-of-sight thermal radiation, with energy transferred between heat capacities.
     // Air/gases are transparent; the first solid or liquid absorbs the ray.
-    if ((world.stepTick & 7) === 0) for (let y=0; y<h; y++) for (let x=0; x<w; x++) {
+    if ((world.stepTick & 7) === 0) for (let y=0; y<h; y++) {
+      if (!world.rowActive[y]) continue;
+      for (let x=0; x<w; x++) {
       const i=y*w+x, id=mat[i], t=temp[i];
       if (!id || t < 300 || STATE_LUT[id] === 4) continue;
       for (let d=0; d<4; d++) {
@@ -191,6 +190,7 @@ export class ThermalSolver {
           break;
         }
       }
+      }
     }
 
     if (!runPhase) return;
@@ -206,7 +206,9 @@ export class ThermalSolver {
     }
     const steamCondenseBase = this.steamCondenseBase;
 
+    const dt = world.dtSeconds;
     for (let y = 0; y < h; y++) {
+      if (!world.rowActive[y]) continue;
       const row = y * w;
       for (let x = 0; x < w; x++) {
         const i = row + x;
@@ -216,7 +218,7 @@ export class ThermalSolver {
         const def = MATERIAL_BY_ID[m];
         const t = temp[i];
 
-        if (m === MAT.DRY_ICE && t > -78.5 && world.rand() < Math.min(.025, .001 + (t + 78.5) * .00015)) {
+        if (m === MAT.DRY_ICE && t > -78.5 && world.rand() < chancePerTick(Math.min(1.5, .06 + (t + 78.5) * .009), dt)) {
           mat[i] = MAT.CO2; temp[i] = Math.max(-100, t - 8); world.wetness[i] = 190; continue;
         }
         if (m === MAT.WATER_VAPOR) {
@@ -230,12 +232,12 @@ export class ThermalSolver {
           if (x+1 < w && mat[i+1] === MAT.GLASS && temp[i+1] < dew) coldSurface = true;
           if (y > 0 && mat[i-w] === MAT.GLASS && temp[i-w] < dew) coldSurface = true;
           if (y+1 < h && mat[i+w] === MAT.GLASS && temp[i+w] < dew) coldSurface = true;
-          if (coldSurface && world.rand() < .015) { mat[i] = t < 0 ? MAT.FROST : MAT.WATER; temp[i] += 2; continue; }
+          if (coldSurface && world.rand() < chancePerTick(0.9, dt)) { mat[i] = t < 0 ? MAT.FROST : MAT.WATER; temp[i] += 2; continue; }
         }
 
-        // 1. Melting
+        // 1. Melting — скорость в 1/с, а не вероятность «за кадр».
         if (def.meltTempC !== undefined && def.meltInto !== undefined && t > def.meltTempC) {
-          if (world.rand() < Math.min(0.65, 0.08 + (t - def.meltTempC) * 0.015)) {
+          if (world.rand() < chancePerTick(Math.min(60, 4.8 + (t - def.meltTempC) * 0.9), dt)) {
             mat[i] = def.meltInto;
             temp[i] -= 8;
             continue;
@@ -256,10 +258,13 @@ export class ThermalSolver {
             // At atmospheric pressure water needs time and latent heat to vaporise.
             // Low-pressure flashing remains faster because the boiling point is much lower.
             const waterAtPressure = AQUEOUS_LUT[m] === 1 && basePKPa >= 20;
-            // Латентная теплота: при атмосферном давлении вода испаряется постепенно,
-            // а не превращается в пар за 2–3 такта. Вакуумное вскипание остаётся быстрым.
-            const boilChance = waterAtPressure ? Math.min(0.045, 0.006 + superheat * 0.0012) : Math.min(0.8, 0.14 + superheat * 0.03);
-            if (world.rand() < boilChance) {
+            // Скрытая теплота парообразования: при 1× вода испаряется за десятки
+            // секунд, а не за одну. Вакуумное вскипание остаётся быстрым.
+            // Все скорости заданы в 1/секунду и переводятся в вероятность такта.
+            const boilRate = waterAtPressure
+              ? Math.min(1.2, 0.09 + superheat * 0.02)
+              : Math.min(48, 8.4 + superheat * 1.8);
+            if (world.rand() < chancePerTick(boilRate, dt)) {
               if (m === MAT.SALTWATER && world.rand() < 0.28) {
                 mat[i] = MAT.SALT;
               } else if (m === MAT.SYRUP && world.rand() < 0.32) {
@@ -282,14 +287,14 @@ export class ThermalSolver {
             t > 12 &&
             y > 0 &&
             mat[i - w] === MAT.EMPTY &&
-            world.rand() < 0.0045
+            world.rand() < chancePerTick(0.27, dt)
           ) {
             mat[i - w] = MAT.FUEL_VAPOR;
             temp[i - w] = t;
             world.wetness[i - w] = 180;
           } else if (
             (m === MAT.WATER || m === MAT.SALTWATER || m === MAT.SEAWATER) && t > 0 && y > 0 && mat[i - w] === MAT.EMPTY &&
-            world.rand() < Math.min(.002, .00018 * Math.exp(Math.min(3, (t - 20) / 35)) * Math.max(0, 1 - humidity / 100))
+            world.rand() < chancePerTick(Math.min(.12, .0108 * Math.exp(Math.min(3, (t - 20) / 35)) * Math.max(0, 1 - humidity / 100)), dt)
           ) {
             if (m !== MAT.WATER && world.rand() < .25) {
               mat[i] = MAT.SALT;
@@ -316,11 +321,9 @@ export class ThermalSolver {
 
           if (t < thresholdC) {
             const undercool = thresholdC - t;
-            let prob = Math.min(0.65, 0.04 + undercool * 0.015);
-            if (m === MAT.STEAM) {
-              prob *= 0.6 + (humidity / 100) * 1.1;
-            }
-            if (world.rand() < prob) {
+            let rate = Math.min(39, 2.4 + undercool * 0.9);
+            if (m === MAT.STEAM) rate *= 0.6 + (humidity / 100) * 1.1;
+            if (world.rand() < chancePerTick(rate, dt)) {
               mat[i] = def.freezeInto;
               temp[i] += 4;
               continue;

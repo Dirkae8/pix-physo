@@ -34,7 +34,11 @@ export class CurrentSolver {
   public step(world: World): void {
     // No return contact means no work: common scenes keep their original fast path.
     let groundFound = false;
-    for (let i=0;i<world.size;i++) if (world.mat[i]===MAT.GROUND) { groundFound=true; break; }
+    // Пропускаем целые пустые строки одной проверкой вместо полного сканирования.
+    for (let i=0;i<world.size;i++) {
+      if ((i % world.width) === 0 && !world.rowActive[(i / world.width) | 0]) { i += world.width - 1; continue; }
+      if (world.mat[i]===MAT.GROUND) { groundFound=true; break; }
+    }
     if (!groundFound) return;
     if (this.queue.length !== world.size) { this.queue=new Int32Array(world.size); this.parent=new Int32Array(world.size); this.seen=new Uint8Array(world.size); }
     this.seen.fill(0);

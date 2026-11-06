@@ -1,5 +1,6 @@
 import { BrushShape, GameSettings } from '../types/physics';
-import { ELEC_COND_LUT, MAT, MATERIAL_BY_ID, STATE_LUT, TENSILE_LUT, XMAT } from '../materials/registry';
+import { ELEC_COND_LUT, MAT, MATERIAL_BY_ID, STATE_LUT } from '../materials/registry';
+import { ELEMENT_BRUSH_HOOKS } from '../materials/elementRegistry';
 import { AirSolver } from './AirSolver';
 import { ChemistrySolver } from './ChemistrySolver';
 import { DeviceSolver } from './DeviceSolver';
@@ -25,6 +26,8 @@ export class SimulationEngine {
 
   public paused = false;
   public speedMultiplier = 1;
+  /** Длительность фиксированного физического такта, секунды реального времени. */
+  public static readonly FIXED_DT = 1 / 60;
   private stepAccumulator = 0;
 
   constructor(settings: GameSettings) {
@@ -53,10 +56,15 @@ export class SimulationEngine {
     return false;
   }
 
-  public stepFrame(settings: GameSettings, forceSingleStep = false): number {
-    if (this.paused && !forceSingleStep) {
-      return 0;
-    }
+  /**
+   * @param realDtSeconds — реальное время, прошедшее с прошлого кадра.
+   * При 1× одна симуляционная секунда равна одной реальной независимо от FPS:
+   * 60 Гц → 1 такт за кадр, 120 Гц → 1 такт за два кадра, 30 Гц → 2 такта.
+   * Ускорение 2×/4× умножает число тактов, но НЕ ускоряет сами реакции —
+   * они заданы скоростями в 1/с и считаются от фиксированного `FIXED_DT`.
+   */
+  public stepFrame(settings: GameSettings, forceSingleStep = false, realDtSeconds = SimulationEngine.FIXED_DT): number {
+    if (this.paused && !forceSingleStep) return 0;
 
     const t0 = performance.now();
     this.world.events.explosionEnergy = 0;
@@ -64,24 +72,32 @@ export class SimulationEngine {
     this.world.events.sizzleCount = 0;
     this.world.events.fractureCount = 0;
 
-    // Keep simulation steps intact while spreading expensive accelerated frames.
-    // If the hardware cannot keep up, the requested multiplier is a ceiling, not skipped physics.
-    this.stepAccumulator = forceSingleStep ? 1 : Math.min(4, this.stepAccumulator + this.speedMultiplier);
+    const dt = SimulationEngine.FIXED_DT;
+    this.world.dtSeconds = dt;
+    // Ограничиваем «догон» после сворачивания вкладки: не более 0.1 с за кадр.
+    const safeDt = Math.min(0.1, Math.max(0, realDtSeconds));
+    this.stepAccumulator = forceSingleStep
+      ? 1
+      : Math.min(8, this.stepAccumulator + (safeDt / dt) * this.speedMultiplier);
+
     const isBalance = settings.computeMode === 'balance70';
     const mechSubsteps = Math.max(1, settings.substeps);
     let ticks = 0;
-    while (this.stepAccumulator >= 1 && ticks < 4) {
-      if (ticks > 0 && performance.now() - t0 > 12) break;
+    while (this.stepAccumulator >= 1 && ticks < 8) {
+      // Никакого «пропуска физики по времени»: 1× обязан идти секунда в
+      // секунду, а 4× — вчетверо быстрее. От «спирали смерти» защищает
+      // ограничение accumulator (не более 0.1 с реального времени за кадр).
       this.stepAccumulator -= 1;
       ticks++;
-      this.world.timeSec += 1 / 60;
+      this.world.timeSec += dt;
+      // Один проход по миру вместо полных проходов в каждом решателе.
+      this.world.refreshActivity();
       this.stepWeather();
       stepWires(this.world);
       this.airSolver.step(this.world, isBalance ? 4 : 2);
       this.surfaceWaveSolver.step(this.world);
       this.thermalSolver.step(this.world, true);
-      // Второй проход в режиме «Баланс» уточняет только теплопроводность:
-      // повторные фазовые переходы делали бы кипение нереалистично быстрым.
+      // Второй проход в «Балансе» уточняет только теплопроводность.
       if (isBalance) this.thermalSolver.step(this.world, false);
       this.electricSolver.step(this.world, isBalance ? 8 : 5);
       this.currentSolver.step(this.world);
@@ -159,56 +175,13 @@ export class SimulationEngine {
     const world = this.world;
     const r = Math.max(0, radius);
 
-    // ---- Четыре новых инструмента расширения каталога ----
-    if (matId === XMAT.TOOL_MAGNET) {
-      this.forEachBrushCell(cx, cy, r + 8, 'circle', (x, y, falloff) => {
-        const i = y * world.width + x, m = world.mat[i];
-        if (m !== MAT.IRON_FILINGS && m !== XMAT.TITANIUM_FILINGS && m !== XMAT.GRAPHITE_DUST) return;
-        const dx = cx - x, dy = cy - y, len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        const pull = 2.6 * falloff * Math.min(1, 8 / len);
-        world.vx[i] += (dx / len) * pull;
-        world.vy[i] += (dy / len) * pull;
-      });
-      return;
-    }
-
-    if (matId === XMAT.TOOL_VACUUM) {
-      this.forEachBrushCell(cx, cy, r + 2, 'circle', (x, y, falloff) => {
-        const i = y * world.width + x, st = STATE_LUT[world.mat[i]];
-        if (st === 4 || st === 5) {
-          if (world.rand() < 0.35 + 0.6 * falloff) world.mat[i] = MAT.EMPTY;
-        }
-        world.airPressure[world.airIdxFromCell(x, y)] -= 0.6 * falloff;
-      });
-      return;
-    }
-
-    if (matId === XMAT.TOOL_HAMMER) {
-      this.forEachBrushCell(cx, cy, r, 'circle', (x, y, falloff) => {
-        const i = y * world.width + x, m = world.mat[i];
-        if (STATE_LUT[m] !== 1) return;
-        world.stress[i] += 55 * falloff;
-        if (world.stress[i] > TENSILE_LUT[m] && world.rand() < 0.35 * falloff) {
-          world.fractureCell(i, x - cx, y - cy, Math.max(1, Math.hypot(x - cx, y - cy)), 1.2 * falloff);
-          world.stress[i] = 0;
-        }
-      });
-      return;
-    }
-
-    if (matId === XMAT.TOOL_DRYER) {
-      this.forEachBrushCell(cx, cy, r, 'circle', (x, y, falloff) => {
-        const i = y * world.width + x;
-        world.temp[i] = Math.min(320, world.temp[i] + 18 * falloff);
-        if (world.wetness[i] > 0) {
-          world.wetness[i] = Math.max(0, world.wetness[i] - Math.round(70 * falloff));
-          if (world.wetness[i] === 0) world.absorbedMat[i] = 0;
-        }
-        if (y > 0 && world.mat[i] === MAT.WATER && world.mat[i - world.width] === MAT.EMPTY &&
-            world.rand() < 0.04 * falloff) {
-          world.setCell(x, y - 1, MAT.WATER_VAPOR, world.temp[i]);
-        }
-      });
+    // Инструменты, описанные в отдельных файлах элементов (магнит, пылесос,
+    // молот, сушилка и любые будущие инструменты модов).
+    const brushHook = ELEMENT_BRUSH_HOOKS[matId];
+    if (brushHook) {
+      const forEach = (px: number, py: number, pr: number, fn: (x: number, y: number, falloff: number) => void) =>
+        this.forEachBrushCell(px, py, pr, 'circle', fn);
+      brushHook(world, cx, cy, r, forEach);
       return;
     }
 

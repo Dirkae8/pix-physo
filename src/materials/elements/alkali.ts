@@ -1,0 +1,49 @@
+// Элемент #124 — Щёлочь. Файл создан генератором, но редактируется вручную:
+// это и есть единственный источник характеристик, реакций и поведения вещества.
+import { defineElement } from '../elementApi';
+
+export default defineElement({
+  mod: "phase.reactions",
+  tags: ["phase.reactions","liquid","liquids","selectable"],
+  summary: "Щелочной раствор нейтрализует кислоту с выделением тепла.",
+  def: {
+    id: 124,
+    key: "alkali",
+    name: "Щёлочь",
+    shortDesc: "Щелочной раствор нейтрализует кислоту с выделением тепла.",
+    category: "liquids",
+    state: "liquid",
+    selectable: true,
+    density: 1050,
+    specificHeat: 4.18,
+    thermalCond: 0.22,
+    boilTempC: 105,
+    boilInto: 40,
+    freezeTempC: 0,
+    freezeInto: 7,
+    flammability: 0,
+    acidResistance: 1,
+    porosity: 0,
+    viscosity: 0.04,
+    dispersion: 11,
+    reposeSkip: 0,
+    tensileStrength: 0,
+    elecCond: 0.08,
+    baseColor: [175,200,196],
+    accentColor: [128,202,255],
+    metallic: 0.12,
+    roughness: 0.05,
+    opacity: 0.72,
+    emissive: 0,
+    textureStyle: "liquid_clear",
+  },
+  reactions: [
+    {"note":"Кипение → #40","trigger":"heat","minTempC":105,"ratePerSecond":0.11,"produce":40},
+    {"note":"Затвердевание → #7","trigger":"heat","minTempC":0,"produce":7},
+  ],
+  behavior: {
+    smothers: true,
+    aqueous: true,
+  },
+
+});

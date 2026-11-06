@@ -15,6 +15,7 @@ import {
   SELECTABLE_MATERIALS,
   XMAT,
 } from '../materials/registry';
+import { describeElement, ELEMENT_BY_ID } from '../materials/elementRegistry';
 import {
   BoundaryMode,
   BrushShape,
@@ -272,14 +273,7 @@ export class AppUI {
               <div class="ctrl-row"><div class="ctrl-label"><span>Размер мира (изменение очищает поле)</span></div><select class="dark-select" id="selWorldSize"><option value="standard">480×270</option><option value="high">576×324</option><option value="ultra">680×382</option><option value="large">960×540</option></select></div>
               <div class="ctrl-row">
                 <div class="ctrl-label"><span>Научный режим камеры</span></div>
-                <select class="dark-select" id="selDisplayMode">
-                  <option value="realistic">Реалистичный (HDR + PBR текстуры)</option>
-                  <option value="thermal">Тепловизор (FLIR ИК-спектр)</option>
-                  <option value="pressure">Давление и ударные волны (кПа)</option>
-                  <option value="velocity">Аэродинамика и потоки ветра</option>
-                  <option value="electric">Электрический потенциал (В / А)</option>
-                  <option value="stress">Гидростатика и мех. нагрузка</option>
-                </select>
+                <div class="sub-hint">Переключатель режимов вынесен на отдельную панель прямо над полем — он всегда виден и не требует открывать настройки.</div>
               </div>
               <div class="ctrl-row">
                 <div class="ctrl-label"><span>Границы поля</span></div>
@@ -306,6 +300,17 @@ export class AppUI {
 
           <!-- SIMULATION STAGE -->
           <main class="stage-area">
+            <div class="display-mode-bar" id="displayModeBar" role="tablist" aria-label="Режим отображения">
+              <span class="mode-label">Режим</span>
+              <button class="mode-btn active" data-mode="realistic" role="tab" aria-selected="true" title="Реалистичный HDR: PBR-текстуры, преломление, тепловое свечение">◉ Реальный</button>
+              <button class="mode-btn" data-mode="thermal" role="tab" aria-selected="false" title="Тепловизор FLIR: инфракрасный спектр температур">◍ Тепло</button>
+              <button class="mode-btn" data-mode="pressure" role="tab" aria-selected="false" title="Давление и ударные волны, кПа">◎ Давление</button>
+              <button class="mode-btn" data-mode="velocity" role="tab" aria-selected="false" title="Аэродинамика: векторы и потоки ветра">≋ Ветер</button>
+              <button class="mode-btn" data-mode="electric" role="tab" aria-selected="false" title="Электрический потенциал, В / А">ϟ Ток</button>
+              <button class="mode-btn" data-mode="stress" role="tab" aria-selected="false" title="Гидростатика и механическая нагрузка">▦ Нагрузка</button>
+              <span class="mode-spacer"></span>
+              <span class="mode-clock" id="modeClock" title="Симуляционное время: при 1× идёт секунда в секунду">t = 0,00 с · 1×</span>
+            </div>
             <div class="canvas-wrap" id="canvasWrap">
               <div class="canvas-frame" id="canvasFrame">
                 <canvas class="sim-canvas" id="simCanvas"></canvas>
@@ -314,7 +319,7 @@ export class AppUI {
             </div>
             <footer class="status-bar">
               <div class="probe-readout" id="probeReadout">
-                ЛКМ — рисовать · ПКМ — ластик · Shift — линия · Пробел — пауза · F — шаг · Ctrl+Z — отмена · R — направление · N — новинки · 0–7 — категории
+                ЛКМ — рисовать · ПКМ — ластик · Shift — линия · Пробел — пауза · F — шаг · Ctrl+Z — отмена · R — направление · N — новинки · Q/E — режимы · 0–7 — категории
               </div>
               <div class="telemetry-readout" id="telemetryReadout">
                 CPU физика · GPU рендер
@@ -347,7 +352,9 @@ export class AppUI {
                 class="search-input"
                 id="inpSearch"
                 placeholder="Поиск из ${SELECTABLE_MATERIALS.length} предметов..."
+                aria-label="Поиск предмета"
               />
+              <button class="mini-btn search-clear" id="btnClearSearch" title="Очистить поиск" aria-label="Очистить поиск">✕</button>
 
               <div class="brush-inline">
                 <span>Кисть:</span>
@@ -648,7 +655,12 @@ export class AppUI {
       const card = document.createElement('button');
       card.className = `item-card ${def.id === this.selectedMatId ? 'active' : ''} ${isNew ? 'is-new' : ''}`;
       const facts = this.materialFacts(def);
-      card.title = `${def.name}\n${def.shortDesc}${facts ? `\n${facts}` : ''}`;
+      // Подсказка собирается из собственного файла элемента: характеристики,
+      // реакции, мод-владелец. Никаких данных, зашитых в интерфейсе.
+      const element = ELEMENT_BY_ID[def.id];
+      const details = describeElement(def.id);
+      card.title = `${def.name}\n${def.shortDesc}${facts ? `\n${facts}` : ''}` +
+        (element ? `\n${element.mod} · ${element.tags.join(', ')}${details ? `\n${details}` : ''}` : '');
 
 
       const subText =
@@ -685,6 +697,26 @@ export class AppUI {
     this.selectedMatId = matId;
     this.fanDirBarEl.style.display = [MAT.FAN, MAT.PUMP, MAT.VALVE, MAT.DIODE, MAT.RELAY, MAT.COMPRESSOR, MAT.VACUUM_PUMP].some(id => id === matId) ? 'flex' : 'none';
     this.renderItemsStrip();
+  }
+
+  private static readonly MODE_ORDER: DisplayMode[] = [
+    'realistic', 'thermal', 'pressure', 'velocity', 'electric', 'stress',
+  ];
+
+  /** Единая точка переключения: синхронизирует панель, GPU и подсказки. */
+  private setDisplayMode(mode: DisplayMode): void {
+    if (!AppUI.MODE_ORDER.includes(mode)) return;
+    this.displayMode = mode;
+    this.root.querySelectorAll<HTMLButtonElement>('#displayModeBar [data-mode]').forEach((btn) => {
+      const active = btn.dataset.mode === mode;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+  }
+
+  private cycleDisplayMode(delta: number): void {
+    const i = AppUI.MODE_ORDER.indexOf(this.displayMode);
+    this.setDisplayMode(AppUI.MODE_ORDER[(i + delta + AppUI.MODE_ORDER.length) % AppUI.MODE_ORDER.length]);
   }
 
   private updateSelectedBanner(): void {
@@ -944,8 +976,9 @@ export class AppUI {
       this.syncEnvironmentUI();
     });
 
-    this.root.querySelector('#selDisplayMode')!.addEventListener('change', (e) => {
-      this.displayMode = (e.target as HTMLSelectElement).value as DisplayMode;
+    const modeBar = this.root.querySelector('#displayModeBar')!;
+    modeBar.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => this.setDisplayMode(btn.dataset.mode as DisplayMode));
     });
 
     this.root.querySelector('#selBoundary')!.addEventListener('change', (e) => {
@@ -976,6 +1009,11 @@ export class AppUI {
     });
     const newOnlyBtn = this.root.querySelector('#btnNewOnly') as HTMLButtonElement;
     newOnlyBtn.addEventListener('click', () => this.toggleNewOnly());
+    this.root.querySelector('#btnClearSearch')!.addEventListener('click', () => {
+      (this.root.querySelector('#inpSearch') as HTMLInputElement).value = '';
+      this.searchQuery = '';
+      this.renderItemsStrip();
+    });
 
     const rngBrush = this.root.querySelector('#rngBrush') as HTMLInputElement;
     const valBrush = this.root.querySelector('#valBrush')!;
@@ -1466,6 +1504,10 @@ export class AppUI {
         (this.root.querySelector('#btnStep') as HTMLButtonElement).click();
       } else if (key === 'n') {
         this.toggleNewOnly();
+      } else if (key === 'q') {
+        this.cycleDisplayMode(-1);
+      } else if (key === 'e') {
+        this.cycleDisplayMode(1);
       } else if (key === 'r' && [
         MAT.FAN, MAT.PUMP, MAT.VALVE, MAT.DIODE, MAT.RELAY, MAT.COMPRESSOR, MAT.VACUUM_PUMP,
         XMAT.PIEZO, XMAT.THERMOCOUPLE,
@@ -1688,6 +1730,10 @@ export class AppUI {
     const modeTag = this.settings.computeMode === 'gpu90' ? 'Приоритет GPU' : 'Баланс';
     this.computeBadgeEl.textContent = `${modeTag} · GPU рендер / CPU физика`;
     this.telemetryEl.textContent = `${this.fps} FPS · ${this.particleCount.toLocaleString('ru-RU')} частиц · CPU физика · GPU рендер`;
+    const clock = this.root.querySelector('#modeClock');
+    if (clock) {
+      clock.textContent = `t = ${this.engine.world.timeSec.toFixed(2).replace('.', ',')} с · ${this.engine.speedMultiplier}×${this.engine.paused ? ' · пауза' : ''}`;
+    }
 
     if (this.pointerSimX >= 0 && this.pointerSimY >= 0) {
       const pr = this.engine.world.probeAt(this.pointerSimX, this.pointerSimY);
@@ -1698,8 +1744,14 @@ export class AppUI {
   }
 
   private startLoop(): void {
+    let lastFrameAt = performance.now();
     const tick = () => {
-      const cpuMs = this.engine.stepFrame(this.settings, false);
+      const now = performance.now();
+      // Реальное время между кадрами: 1× означает «секунда в секунду»
+      // и не зависит от частоты монитора или просадок FPS.
+      const realDt = (now - lastFrameAt) / 1000;
+      lastFrameAt = now;
+      const cpuMs = this.engine.stepFrame(this.settings, false, realDt);
       const { gpuMs, particleCount } = this.gpu.render(this.engine.world, this.settings, this.displayMode);
       this.sound.tick(this.engine.world, this.settings);
       this.drawHudOverlay();
@@ -1709,7 +1761,6 @@ export class AppUI {
       this.particleCount = particleCount;
 
       this.frameCounter++;
-      const now = performance.now();
       if (now - this.lastFpsStamp >= 500) {
         this.fps = Math.min(144, Math.round((this.frameCounter * 1000) / (now - this.lastFpsStamp)));
         this.frameCounter = 0;

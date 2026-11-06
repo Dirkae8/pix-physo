@@ -1,4 +1,5 @@
 import { MAT } from '../materials/registry';
+import { ELEMENT_BY_ID, SHEET_LUT } from '../materials/elementRegistry';
 import { MaterialDef } from '../types/physics';
 
 const THUMB_W = 144;
@@ -64,132 +65,111 @@ function drawStudioBackdrop(ctx: CanvasRenderingContext2D, accent: [number, numb
   ctx.fillRect(10, THUMB_H * 0.65, THUMB_W - 20, THUMB_H * 0.35);
 }
 
-// Per-pixel PBR 3D studio block renderer (for realistic Steel, Brick, Wood, Concrete, Titanium, Ceramic, Ice, Sponge, Rubber, Wax, Lead)
+// Симметричный изометрический брусок. Раньше левая грань считалась по
+// некорректному условию и «съезжала», из-за чего текстура выглядела кривой.
+// Теперь все три грани заданы одной геометрией, а узор всегда в (u,v) грани.
 function renderRealisticSolidBlock(ctx: CanvasRenderingContext2D, def: MaterialDef): void {
   drawStudioBackdrop(ctx, def.accentColor);
   const img = ctx.getImageData(0, 0, THUMB_W, THUMB_H);
   const d = img.data;
 
-  // Render an angled 3D isometric slab with top face, front-left face, and front-right face!
   const cx = THUMB_W * 0.5;
-  const cy = THUMB_H * 0.52;
+  const topY = THUMB_H * 0.52 - 12;
+  const halfW = 46;
+  const halfH = 22;
+  const faceH = 34;
 
-  for (let y = 10; y < THUMB_H - 8; y++) {
-    for (let x = 16; x < THUMB_W - 16; x++) {
-      // Transform into isometric cube coordinates
-      const dx = (x - cx) / 44;
-      const dy = (y - cy) / 25;
+  for (let y = 8; y < THUMB_H - 6; y++) {
+    for (let x = 12; x < THUMB_W - 12; x++) {
+      const dx = (x - cx) / halfW;
+      if (dx < -1 || dx > 1) continue;
 
-      // Determine which face of the 3D block (top, left, right) pixel hits
-      let face = 0; // 0=none, 1=top, 2=left, 3=right
-      let u = 0;
-      let v = 0;
+      let face = 0; // 1 = верх, 2 = левая грань, 3 = правая грань
+      let u = 0, v = 0;
 
-      // Top diamond: |dx| + |dy + 0.42| <= 0.98
-      const topY = dy + 0.44;
-      if (Math.abs(dx) + Math.abs(topY) <= 0.98) {
+      const dyTop = (y - topY) / halfH;
+      if (Math.abs(dx) + Math.abs(dyTop) <= 1) {
         face = 1;
-        u = (dx + topY) * 0.5 + 0.5;
-        v = (topY - dx) * 0.5 + 0.5;
-      } else if (dx < 0 && dx >= -0.98 && dy > -0.44 + (-dx - 0.98) && dy <= 0.66 + dx * 0.52 + 0.48) {
-        const topEdge = -0.44 + (0.98 + dx);
-        const botEdge = 0.42 + (0.98 + dx);
-        if (dy >= topEdge - 0.96 && dy <= botEdge) {
-          // Left front face
-          const localTop = -0.44 + Math.abs(dx);
-          const localBot = localTop + 0.82;
-          if (dy >= localTop && dy <= localBot) {
-            face = 2;
-            u = dx + 0.98;
-            v = (dy - localTop) / 0.82;
-          }
-        }
-      } else if (dx >= 0 && dx <= 0.98) {
-        const localTop = -0.44 + dx;
-        const localBot = localTop + 0.82;
-        if (dy >= localTop && dy <= localBot) {
-          face = 3;
-          u = dx;
-          v = (dy - localTop) / 0.82;
+        u = (dx - dyTop + 1) * 0.5;
+        v = (dx + dyTop + 1) * 0.5;
+      } else {
+        // Нижняя кромка ромба: слева поднимается к центру, справа опускается.
+        const edgeY = dx < 0
+          ? topY + (dx + 1) * halfH
+          : topY + (1 - dx) * halfH;
+        const local = (y - edgeY) / faceH;
+        if (local >= 0 && local <= 1) {
+          face = dx < 0 ? 2 : 3;
+          u = dx < 0 ? dx + 1 : dx;
+          v = local;
         }
       }
-
       if (face === 0) continue;
 
       let r = def.baseColor[0];
       let g = def.baseColor[1];
       let b = def.baseColor[2];
-      const ar = def.accentColor[0];
-      const ag = def.accentColor[1];
-      const ab = def.accentColor[2];
+      const ar = def.accentColor[0], ag = def.accentColor[1], ab = def.accentColor[2];
+      const style = def.textureStyle;
 
-      // Realistic procedural PBR material surface per style!
-      if (def.textureStyle === 'brushed_metal') {
-        // PHOTO-GRADE STEEL / TITANIUM / LEAD: fine brushed linear scratches + studio softbox specular band!
+      if (style === 'brushed_metal') {
         const fineGrain = fbm(u * 65, v * 5.5, 3) - 0.5;
         const microScratch = (hash2(Math.floor(u * 140), Math.floor(v * 26)) - 0.5) * 24;
         const specSweep = Math.exp(-Math.pow((u * 0.8 + v * 0.55 - 0.58) * 4.2, 2)) * 95;
-        const secSheen = Math.exp(-Math.pow((u - v - 0.15) * 5.5, 2)) * 36;
-        r = r + fineGrain * 34 + microScratch + specSweep + secSheen;
-        g = g + fineGrain * 34 + microScratch + specSweep + secSheen;
-        b = b + fineGrain * 36 + microScratch + specSweep * 1.05 + secSheen;
-      } else if (def.textureStyle === 'brick') {
-        // REAL CLAY MASONRY BRICK: porous baked terracotta + recessed mortar grooves + mineral grains
+        const sheen = Math.exp(-Math.pow((u - v - 0.15) * 5.5, 2)) * 36;
+        r += fineGrain * 34 + microScratch + specSweep + sheen;
+        g += fineGrain * 34 + microScratch + specSweep + sheen;
+        b += fineGrain * 36 + microScratch + specSweep * 1.05 + sheen;
+      } else if (style === 'brick') {
         const row = Math.floor(v * 3.0);
         const mortU = fract(u * 2.0 + (row % 2) * 0.5);
         const mortV = fract(v * 3.0);
         if (mortU < 0.08 || mortV < 0.11) {
-          const mNoise = (fbm(x * 0.4, y * 0.4, 3) - 0.5) * 32;
-          r = ar * 0.88 + mNoise;
-          g = ag * 0.88 + mNoise;
-          b = ab * 0.86 + mNoise;
+          const n = (fbm(u * 18, v * 18, 3) - 0.5) * 32;
+          r = ar * 0.88 + n; g = ag * 0.88 + n; b = ab * 0.86 + n;
         } else {
-          const clayPits = (fbm(x * 0.32, y * 0.32, 4) - 0.48) * 68;
-          const darkSpeck = hash2(x, y) > 0.93 ? -34 : 0;
-          r += clayPits + darkSpeck;
-          g += clayPits * 0.72 + darkSpeck;
-          b += clayPits * 0.58 + darkSpeck;
+          const pits = (fbm(u * 16, v * 16, 4) - 0.48) * 68;
+          const speck = hash2(Math.floor(u * 60), Math.floor(v * 60)) > 0.93 ? -34 : 0;
+          r += pits + speck; g += pits * 0.72 + speck; b += pits * 0.58 + speck;
         }
-      } else if (def.textureStyle === 'wood') {
-        // REAL OAK WOOD TIMBER: natural wood fibers & warm growth rings
+      } else if (style === 'wood') {
         const warp = fbm(u * 4, v * 4, 3) * 2.5;
         const rings = Math.sin((v * 14 + warp) * Math.PI) * 0.5 + 0.5;
         const fiber = (fbm(u * 55, v * 6, 2) - 0.5) * 26;
         r = r * (0.76 + 0.34 * rings) + fiber;
         g = g * (0.74 + 0.34 * rings) + fiber * 0.8;
-        b = b * (0.7 + 0.32 * rings) + fiber * 0.6;
-      } else if (def.textureStyle === 'glass' || def.textureStyle === 'ice') {
-        // REFRACTIVE CRYSTAL GLASS / ICE: translucent cyan-white caustics & sharp Fresnel edge reflections
+        b = b * (0.70 + 0.32 * rings) + fiber * 0.6;
+      } else if (style === 'glass' || style === 'ice') {
         const bgIdx = (y * THUMB_W + x) * 4;
         const caust = Math.pow(fbm(u * 7, v * 7, 3), 2) * 110;
-        const fresnel =
-          u < 0.08 || u > 0.92 || v < 0.08 || v > 0.92
-            ? 0.88
-            : Math.exp(-Math.pow((u + v - 0.85) * 5.0, 2)) * 0.65;
+        const fresnel = (u < 0.08 || u > 0.92 || v < 0.08 || v > 0.92)
+          ? 0.88 : Math.exp(-Math.pow((u + v - 0.85) * 5.0, 2)) * 0.65;
         r = d[bgIdx] * 0.38 + r * 0.48 + caust + ar * fresnel * 0.65;
         g = d[bgIdx + 1] * 0.38 + g * 0.52 + caust + ag * fresnel * 0.65;
         b = d[bgIdx + 2] * 0.38 + b * 0.56 + caust + ab * fresnel * 0.68;
-      } else if (def.textureStyle === 'sponge') {
-        const cell = fbm(x * 0.36, y * 0.36, 3);
+      } else if (style === 'sponge') {
+        const cell = fbm(u * 18, v * 18, 3);
         const hole = cell > 0.6 ? -58 : (cell - 0.3) * 45;
-        r += hole;
-        g += hole * 0.88;
-        b += hole * 0.5;
+        r += hole; g += hole * 0.88; b += hole * 0.5;
+      } else if (style === 'fibers' || style === 'wax' || style === 'rubber') {
+        // Волокна/полимеры: тонкая продольная текстура, а не каменная крошка.
+        const thread = Math.sin(u * 190 + fbm(u * 8, v * 8, 2) * 3) * 9;
+        const noise = (fbm(u * 26, v * 26, 3) - 0.5) * 22;
+        r += thread + noise; g += thread + noise; b += thread + noise * 0.9;
+      } else if (style === 'crystal' || style === 'granular' || style === 'coal' || style === 'soil' || style === 'snow') {
+        const grit = (hash2(Math.floor(u * 70), Math.floor(v * 70)) - 0.5) * 36;
+        const grain = (fbm(u * 22, v * 22, 3) - 0.5) * 30;
+        r += grit + grain; g += grit + grain; b += grit + grain;
       } else {
-        // Concrete, Ceramic, Rubber, Wax
-        const stone = (fbm(x * 0.28, y * 0.28, 4) - 0.5) * 52;
-        const micro = (hash2(x, y) - 0.5) * 16;
-        r += stone + micro;
-        g += stone + micro;
-        b += stone + micro;
+        // Бетон, керамика, композит.
+        const stone = (fbm(u * 14, v * 14, 4) - 0.5) * 52;
+        const micro = (hash2(Math.floor(u * 90), Math.floor(v * 90)) - 0.5) * 16;
+        r += stone + micro; g += stone + micro; b += stone + micro;
       }
 
-      // 3D Face studio lighting (Top brightest, Left lit by key light, Right shaded + rim bounce)
       const faceShade = face === 1 ? 1.16 : face === 2 ? 0.94 : 0.66;
-      // Crisp chamfer highlight along 3D edges!
-      const edgeBevel =
-        (u < 0.045 || v < 0.045 || u > 0.955 || v > 0.955) ? (def.metallic > 0.5 ? 42 : 18) : 0;
-
+      const edgeBevel = (u < 0.035 || u > 0.965 || v < 0.035 || v > 0.965)
+        ? (def.metallic > 0.5 ? 42 : 18) : 0;
       const idx = (y * THUMB_W + x) * 4;
       d[idx] = clampByte(r * faceShade + edgeBevel);
       d[idx + 1] = clampByte(g * faceShade + edgeBevel);
@@ -197,8 +177,51 @@ function renderRealisticSolidBlock(ctx: CanvasRenderingContext2D, def: MaterialD
       d[idx + 3] = 255;
     }
   }
-
   ctx.putImageData(img, 0, 0);
+}
+
+/** Тонкий лист (бумага, картон, ткань, плёнка) — не монолит и не сыпучая куча. */
+function renderRealisticSheet(ctx: CanvasRenderingContext2D, def: MaterialDef): void {
+  drawStudioBackdrop(ctx, def.accentColor);
+  const img = ctx.getImageData(0, 0, THUMB_W, THUMB_H);
+  const d = img.data;
+  const left = 18, right = THUMB_W - 18;
+
+  for (let y = 14; y < THUMB_H - 10; y++) {
+    for (let x = left; x < right; x++) {
+      const u = (x - left) / (right - left);
+      const v = (y - 14) / (THUMB_H - 24);
+      // Две мягкие складки: лист лежит волной, а не висит ровным прямоугольником.
+      const fold = Math.sin(u * Math.PI * 2.2 + 0.4) * 6 + Math.sin(u * Math.PI * 5.3) * 2;
+      const top = 26 + fold;
+      const bottom = THUMB_H - 22 + fold * 0.6;
+      if (y < top || y > bottom) continue;
+
+      const shade = 0.78 + 0.30 * Math.sin(u * Math.PI * 2.2 + 0.4);
+      const fibers = Math.sin(u * 210 + fbm(u * 9, v * 9, 2) * 4) * 8;
+      const grain = (fbm(u * 34, v * 34, 3) - 0.5) * 20;
+      // Лёгкая тень у краёв и у сгибов.
+      const edge = Math.min(1, (y - top) / 6, (bottom - y) / 6);
+      const crease = Math.exp(-Math.pow((u - 0.52) * 9, 2)) * 26;
+      const k = shade * (0.72 + 0.28 * edge) - crease / 255;
+      const idx = (y * THUMB_W + x) * 4;
+      d[idx] = clampByte(def.baseColor[0] * k + fibers + grain);
+      d[idx + 1] = clampByte(def.baseColor[1] * k + fibers + grain);
+      d[idx + 2] = clampByte(def.baseColor[2] * k + fibers + grain);
+      d[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  // Тонкая светлая кромка по верхнему срезу листа.
+  ctx.strokeStyle = `rgba(${def.accentColor[0]}, ${def.accentColor[1]}, ${def.accentColor[2]}, 0.75)`;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let x = left; x <= right; x += 3) {
+    const u = (x - left) / (right - left);
+    const fold = Math.sin(u * Math.PI * 2.2 + 0.4) * 6 + Math.sin(u * Math.PI * 5.3) * 2;
+    if (x === left) ctx.moveTo(x, 26 + fold); else ctx.lineTo(x, 26 + fold);
+  }
+  ctx.stroke();
 }
 
 // Realistic 3D Heap of Macro Grains / Crystals / Nuggets (Sand, Soil, Salt, Sugar, Coal, Gold, Gunpowder, Thermite, etc.)
@@ -839,7 +862,9 @@ export function getMaterialThumbnailUrl(def: MaterialDef): string {
   const ctx = canvas.getContext('2d');
   if (!ctx) return '';
 
-  if (def.category === 'solids') {
+  if (def.category === 'solids' && SHEET_LUT[def.id]) {
+    renderRealisticSheet(ctx, def);
+  } else if (def.category === 'solids') {
     renderRealisticSolidBlock(ctx, def);
   } else if (def.category === 'powders' || def.id === MAT.GUNPOWDER || def.id === MAT.THERMITE) {
     renderRealisticPowderMound(ctx, def);

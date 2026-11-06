@@ -72,6 +72,7 @@ export class MechanicsSolver {
     const yStep = downDir > 0 ? -1 : 1;
 
     for (let y = yStart; y !== yEnd; y += yStep) {
+      if (!world.rowActive[y]) continue;
       const flipX = ((y + tick) & 1) === 1;
       for (let rawX = 0; rawX < w; rawX++) {
         const x = flipX ? w - 1 - rawX : rawX;
@@ -88,6 +89,7 @@ export class MechanicsSolver {
     }
 
     for (let y = 0; y < h; y++) {
+      if (!world.rowActive[y]) continue;
       const flipX = ((y + tick + 1) & 1) === 1;
       for (let rawX = 0; rawX < w; rawX++) {
         const x = flipX ? w - 1 - rawX : rawX;
